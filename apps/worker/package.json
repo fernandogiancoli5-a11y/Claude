@@ -1,0 +1,21 @@
+{
+  "name": "@pairloom/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent worker: dials the collaboration server and runs Claude Agent SDK sessions in isolated git worktrees.",
+  "scripts": {
+    "dev": "tsx --env-file-if-exists=../../.env.worker src/index.ts",
+    "start": "tsx --env-file-if-exists=../../.env.worker src/index.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.311",
+    "@pairloom/shared": "*",
+    "ws": "^8.18.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
+  }
+}
