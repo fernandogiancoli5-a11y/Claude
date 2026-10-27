@@ -86,6 +86,7 @@ try {
   await owner.getByRole("button", { name: "Create account" }).click();
   await owner.getByPlaceholder("New workspace name").fill("Demo team");
   await owner.getByRole("button", { name: "Create workspace" }).click();
+  await owner.getByLabel("Project name").fill("tiny-cart");
   await owner.getByRole("button", { name: "Add project" }).click();
   await owner.getByRole("button", { name: "Register worker" }).click();
   const tokenText = await owner.locator("pre.select").innerText();
@@ -109,7 +110,7 @@ try {
   const projectUrl = owner.url();
 
   // Invite collaborator.
-  await owner.getByRole("link", { name: "← workspace" }).click();
+  await owner.getByRole("link", { name: "Demo team" }).first().click();
   await owner.getByRole("button", { name: "Create invite link" }).click();
   const inviteUrl = await owner.locator("code.select").innerText();
   await collab.goto(inviteUrl);
@@ -135,7 +136,7 @@ try {
     throw e;
   });
   await execSelect.selectOption("simulated");
-  await owner.getByRole("button", { name: "Start session" }).click();
+  await owner.getByRole("button", { name: "Start task" }).click();
   await waitFor(() => owner.getByText(/SIMULATED SESSION/).isVisible(), "simulated banner");
   const sessionUrl = owner.url();
   step("real mode disabled (no key); simulated session started with banner");
@@ -198,8 +199,9 @@ try {
     async () => owner.getByRole("button", { name: /Merge into main/ }).isEnabled(),
     "merge enabled",
   );
-  owner.once("dialog", (d) => d.accept());
   await owner.getByRole("button", { name: /Merge into main/ }).click();
+  // Simulated changes need an explicit second confirmation before merging.
+  await owner.getByRole("button", { name: "Merge anyway" }).click();
   await waitFor(() => collab.getByText(/merged as/).isVisible(), "merged visible to collaborator");
   await collab.screenshot({ path: join(shots, "2-collaborator-merged.png"), fullPage: true });
   const log = execFileSync("git", ["log", "--oneline", "-1"], { cwd: repo, encoding: "utf8" });

@@ -208,6 +208,7 @@ try {
   await owner.getByRole("button", { name: "Create account" }).click();
   await owner.getByPlaceholder("New workspace name").fill("Demo team");
   await owner.getByRole("button", { name: "Create workspace" }).click();
+  await owner.getByLabel("Project name").fill("tiny-cart");
   await owner.getByRole("button", { name: "Add project" }).click();
   await owner.getByRole("button", { name: "Register worker" }).click();
   const token = (await owner.locator("pre.select").innerText()).match(
@@ -228,7 +229,6 @@ try {
     AGENT_MAX_MODEL_CALLS_PER_SESSION: "40",
     AGENT_MAX_COST_USD_PER_SESSION: "0.25",
     AGENT_MAX_TURN_SECONDS: "300",
-  };
     // Optional overrides: low-tier provider accounts hit per-minute token limits, and every
     // retry counts toward the model-call cap.
     ...Object.fromEntries(
@@ -236,6 +236,7 @@ try {
         .filter((k) => process.env[k])
         .map((k) => [k, process.env[k]]),
     ),
+  };
   const startWorker = () => run("worker", ["apps/worker/src/index.ts"], workerEnv);
   let worker = startWorker();
   await waitFor(() => owner.getByText("online", { exact: true }).isVisible(), "worker online");
@@ -248,7 +249,7 @@ try {
   );
   step("worker connected; real agent (groq openai/gpt-oss-120b) reported available");
 
-  await owner.getByRole("link", { name: "← workspace" }).click();
+  await owner.getByRole("link", { name: "Demo team" }).first().click();
   await owner.getByRole("button", { name: "Create invite link" }).click();
   const inviteUrl = await owner.locator("code.select").innerText();
   await collab.goto(inviteUrl);
@@ -268,7 +269,7 @@ try {
       "Add applyDiscount(cart, code) to src/cart.js. Code SAVE10 takes 10% off the subtotal (round down to whole cents); unknown codes throw an Error. Add tests in test/discount.test.js and make sure npm test passes.",
     );
   await owner.getByLabel("Execution").selectOption("real");
-  await owner.getByRole("button", { name: "Start session" }).click();
+  await owner.getByRole("button", { name: "Start task" }).click();
   await waitFor(() => owner.getByText(/Real AI agent session/).isVisible(), "real banner");
   const sessionUrl = owner.url();
   step("real-mode session started");

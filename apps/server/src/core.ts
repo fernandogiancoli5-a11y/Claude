@@ -331,6 +331,53 @@ export class Core {
     return p;
   }
 
+  /**
+   * Everything the home screen needs, scoped by SQL to the caller's memberships:
+   * a project the caller cannot see is never selected.
+   */
+  getDashboard(userId: string) {
+    const workspaces = this.db
+      .prepare(
+        `SELECT w.id, w.name, m.role,
+           (SELECT COUNT(*) FROM memberships m2 WHERE m2.workspace_id = w.id) AS memberCount
+         FROM workspaces w JOIN memberships m ON m.workspace_id = w.id
+         WHERE m.user_id = ? ORDER BY w.created_at`,
+      )
+      .all(userId) as Array<{ id: string; name: string; role: Role; memberCount: number }>;
+    const rows = this.db
+      .prepare(
+        `SELECT p.id, p.name, p.workspace_id AS workspaceId, w.name AS workspaceName, m.role,
+           p.default_branch AS defaultBranch, p.created_at AS createdAt,
+           (SELECT COUNT(*) FROM agent_sessions s WHERE s.project_id = p.id) AS sessionCount,
+           (SELECT MAX(s.updated_at) FROM agent_sessions s WHERE s.project_id = p.id) AS lastActivityAt,
+           (SELECT COUNT(*) FROM instructions i JOIN agent_sessions s ON s.id = i.session_id
+              WHERE s.project_id = p.id AND i.status = 'pending_approval') +
+           (SELECT COUNT(*) FROM permission_requests r JOIN agent_sessions s ON s.id = r.session_id
+              WHERE s.project_id = p.id AND r.status = 'pending') AS pendingApprovals,
+           (SELECT COUNT(*) FROM change_sets c JOIN agent_sessions s ON s.id = c.session_id
+              WHERE s.project_id = p.id AND c.status = 'open') AS openChangeSets
+         FROM projects p
+         JOIN workspaces w ON w.id = p.workspace_id
+         JOIN memberships m ON m.workspace_id = p.workspace_id AND m.user_id = ?
+         ORDER BY COALESCE(lastActivityAt, p.created_at) DESC`,
+      )
+      .all(userId) as Array<Record<string, any>>;
+    const latest = this.db.prepare(
+      `SELECT id, title, status, execution_mode AS executionMode, updated_at AS updatedAt
+       FROM agent_sessions WHERE project_id = ? ORDER BY updated_at DESC LIMIT 1`,
+    );
+    const projects = rows.map((r) => {
+      const workers = this.listWorkers(r.id).filter((w) => !w.revoked);
+      return {
+        ...r,
+        latestSession: latest.get(r.id) ?? null,
+        workerCount: workers.length,
+        workersOnline: workers.filter((w) => w.online).length,
+      };
+    });
+    return { workspaces, projects };
+  }
+
   getProject(userId: string, projectId: string) {
     const p = this.projectRow(projectId);
     const role = this.requireRole(userId, p.workspace_id, "viewer");
@@ -341,6 +388,17 @@ export class Core {
       repoUrl: p.repo_url,
       defaultBranch: p.default_branch,
       role,
+      workspaceName: (
+        this.db.prepare("SELECT name FROM workspaces WHERE id = ?").get(p.workspace_id) as {
+          name: string;
+        }
+      ).name,
+      members: this.db
+        .prepare(
+          `SELECT u.id, u.display_name AS displayName, m.role FROM memberships m
+           JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ? ORDER BY m.created_at`,
+        )
+        .all(p.workspace_id),
       workers: this.listWorkers(p.id),
       sessions: this.listSessions(p.id),
     };
@@ -475,9 +533,16 @@ export class Core {
 
   getSession(userId: string, sessionId: string) {
     const { session, role } = this.requireSession(userId, sessionId, "viewer");
+    const project = this.db
+      .prepare(
+        `SELECT p.id, p.name, w.id AS workspaceId, w.name AS workspaceName
+         FROM projects p JOIN workspaces w ON w.id = p.workspace_id WHERE p.id = ?`,
+      )
+      .get(session.project_id);
     return {
       session: this.sessionDto(session),
       role,
+      project,
       instructions: this.db
         .prepare(
           `SELECT i.id, i.text, i.status, i.created_at AS createdAt, i.decision_note AS decisionNote,
@@ -1139,7 +1204,7 @@ export class Core {
       { session_id: string; request_id: string; tool_name: string; status: string } | undefined;
     if (!p) throw new HttpError(404, "Not found");
     this.requireSession(userId, p.session_id, "owner");
-    if (p.status !== "pending") throw new HttpError(409, `Request is ${p.status}`);
+    if (p.status !== "pending") throw new HttpError(409, `This request was already ${p.status}`);
     this.db
       .prepare(
         "UPDATE permission_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?",

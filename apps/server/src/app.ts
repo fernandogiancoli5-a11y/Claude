@@ -127,6 +127,8 @@ export async function buildApp(
   fastify.get("/api/workspaces", async (req) => ({
     workspaces: core.listWorkspaces(user(req).id),
   }));
+  fastify.get("/api/dashboard", async (req) => core.getDashboard(user(req).id));
+
 
   fastify.post("/api/workspaces", async (req) => {
     const { name } = body(z.object({ name: Name }), req);

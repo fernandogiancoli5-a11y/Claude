@@ -83,6 +83,34 @@ describe("workspace membership", () => {
     expect((await outsider.req("POST", `/api/sessions/${sessionId}/stop`)).status).toBe(404);
   });
 
+  it("the dashboard lists only projects the caller is a member of, with live counts", async () => {
+    const { owner, workspaceId, projectId, workerId } = await seed(app);
+    const sessionId = await newSession(owner, projectId, workerId);
+    const outsider = await signup(app, "mallory");
+    const empty = await outsider.req("GET", "/api/dashboard");
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual({ workspaces: [], projects: [] });
+
+    const collab = await invite(app, owner, workspaceId, "collaborator");
+    await collab.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "also this" });
+    const d = (await collab.req("GET", "/api/dashboard")).body;
+    expect(d.workspaces).toEqual([
+      expect.objectContaining({ id: workspaceId, role: "collaborator", memberCount: 2 }),
+    ]);
+    expect(d.projects).toHaveLength(1);
+    expect(d.projects[0]).toMatchObject({
+      id: projectId,
+      role: "collaborator",
+      sessionCount: 1,
+      pendingApprovals: 1,
+      workerCount: 1,
+      latestSession: { id: sessionId, title: "Fix bug" },
+    });
+
+    await owner.req("DELETE", `/api/workspaces/${workspaceId}/members/${collab.userId}`);
+    expect((await collab.req("GET", "/api/dashboard")).body.projects).toEqual([]);
+  });
+
   it("only owners can invite, create projects, register workers and start sessions", async () => {
     const { owner, workspaceId, projectId, workerId } = await seed(app);
     const collab = await invite(app, owner, workspaceId, "collaborator");

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LIMITS, type SessionEvent, TERMINAL_STATUSES } from "@pairloom/shared";
+import { LIMITS, type SessionEvent, type SessionStatus, TERMINAL_STATUSES } from "@pairloom/shared";
 import { ApiError, get, post } from "../api.js";
 import { realtime, useRealtime } from "../realtime.js";
+import { ErrorState, Loading, useCrumbs, useDialog, useToast } from "../ui.js";
 import { ModeBadge, StatusBadge, WorkerBadge } from "./badges.js";
 import type { Me } from "../App.js";
 
@@ -21,12 +22,28 @@ const REFETCH_ON = new Set([
   "system.notice",
 ]);
 
+/**
+ * While the agent may still change the branch, the change set on screen is not final:
+ * the worker only reports idle after recording the turn's checkpoint.
+ */
+const CHANGES_IN_FLUX: SessionStatus[] = [
+  "pending",
+  "starting",
+  "running",
+  "awaiting_approval",
+  "stopping",
+  "disconnected",
+];
+
+type Act = (fn: () => Promise<unknown>, success?: string) => Promise<void>;
+
 export function SessionPage({ id, me }: { id: string; me: Me }) {
   const [detail, setDetail] = useState<any>(null);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const lastSeq = useRef(0);
   const refetchTimer = useRef<number | null>(null);
+  const toast = useToast();
 
   const load = () => get(`/api/sessions/${id}`).then(setDetail, (e) => setError(e.message));
   const scheduleRefetch = () => {
@@ -36,10 +53,19 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
 
   useEffect(() => {
     setEvents([]);
+    setDetail(null);
     lastSeq.current = 0;
     void load();
     return realtime.subscribeSession(id, () => lastSeq.current);
   }, [id]);
+  useCrumbs(
+    detail
+      ? [
+          { label: detail.project?.name ?? "Project", href: `#/p/${detail.session.projectId}` },
+          { label: detail.session.title },
+        ]
+      : null,
+  );
 
   useRealtime(
     (m) => {
@@ -61,8 +87,8 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
     [id],
   );
 
-  if (error) return <p className="error">{error}</p>;
-  if (!detail) return <p className="muted">Loading…</p>;
+  if (error) return <ErrorState message={error} onRetry={load} />;
+  if (!detail) return <Loading />;
   const { session, role, worker } = detail;
   const isOwner = role === "owner";
   const canInstruct = role !== "viewer";
@@ -72,24 +98,21 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
   const agentModel = initPayload?.model
     ? `${initPayload.provider ? `${initPayload.provider} ` : ""}${initPayload.model}`
     : null;
-  const lastChecks = [...events]
-    .reverse()
-    .find((e) => e.type === "checks.completed" || e.type === "checks.started");
 
-  const act = async (fn: () => Promise<unknown>) => {
+  // Every action refreshes afterwards, success or not: a 409 usually means the state moved on.
+  const act: Act = async (fn, success) => {
     try {
       await fn();
-      scheduleRefetch();
+      if (success) toast.info(success);
     } catch (e) {
-      alert((e as Error).message);
+      toast.error((e as Error).message);
+    } finally {
+      scheduleRefetch();
     }
   };
 
   return (
     <div className="stack">
-      <p>
-        <a href={`#/p/${session.projectId}`}>← project</a>
-      </p>
       {simulated ? (
         <div className="banner sim">
           SIMULATED SESSION — no AI model is being called. Activity and file changes are produced by
@@ -97,85 +120,99 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
         </div>
       ) : (
         <div className="banner real">
-          Real AI agent session
-          {agentModel ? ` (${agentModel})` : ""} running on worker “{worker?.name}”. Its output is
-          unverified until the tests run and a human reviews the diff.
-        </div>
-      )}
-      <div className="row wrap">
-        <h2 className="grow">{session.title}</h2>
-        <StatusBadge status={session.status} />
-        <ModeBadge mode={session.executionMode} />
-        {worker && <WorkerBadge worker={worker} />}
-      </div>
-      <p className="muted small">
-        Host {session.hostName} · branch <code>{session.branchName}</code> from{" "}
-        <code>{session.baseBranch}</code>
-        {session.providerSessionId && (
-          <>
-            {" "}
-            · agent session <code>{session.providerSessionId}</code>
-          </>
-        )}
-      </p>
-      {session.status === "interrupted" && (
-        <p className="notice">
-          The worker lost this agent's live process. The stored conversation is history, not a live
-          agent.
-          {isOwner &&
-            session.executionMode === "real" &&
-            session.providerSessionId &&
-            " You can resume it from the saved transcript on the worker."}
-        </p>
-      )}
-      {session.status === "disconnected" && (
-        <p className="notice">
-          The worker is unreachable. The agent may still be running; updates will resume when it
-          reconnects.
-        </p>
-      )}
-      {session.error && <p className="error">Error: {session.error}</p>}
-      {isOwner && (
-        <div className="row">
-          <button
-            disabled={!["running", "awaiting_approval", "disconnected"].includes(session.status)}
-            onClick={() => act(() => post(`/api/sessions/${id}/interrupt`))}
-          >
-            Interrupt turn
-          </button>
-          <button
-            className="danger"
-            disabled={ended}
-            onClick={() =>
-              confirm("Stop this session? The agent process will be ended.") &&
-              act(() => post(`/api/sessions/${id}/stop`))
-            }
-          >
-            Stop session
-          </button>
-          {session.status === "interrupted" && (
-            <button onClick={() => act(() => post(`/api/sessions/${id}/resume`))}>Resume</button>
-          )}
+          Real AI agent session{agentModel ? ` (${agentModel})` : ""} on worker “{worker?.name}”.
+          Its output is unverified until the tests run and a human reviews the diff.
         </div>
       )}
 
-      <div className="columns">
-        <div className="stack">
+      <div className="page-head">
+        <div className="title">
+          <h1>{session.title}</h1>
+          <div className="row wrap small muted">
+            <StatusBadge status={session.status} />
+            <ModeBadge mode={session.executionMode} />
+            {worker && <WorkerBadge worker={worker} />}
+            <span>
+              Host {session.hostName} · branch <code>{session.branchName}</code> from{" "}
+              <code>{session.baseBranch}</code>
+            </span>
+          </div>
+        </div>
+        {isOwner && (
+          <div className="row wrap">
+            {session.status === "interrupted" && (
+              <button
+                className="primary"
+                onClick={() => act(() => post(`/api/sessions/${id}/resume`), "Resume requested")}
+              >
+                Resume
+              </button>
+            )}
+            <button
+              disabled={!["running", "awaiting_approval", "disconnected"].includes(session.status)}
+              onClick={() => act(() => post(`/api/sessions/${id}/interrupt`))}
+              title="Stop the current turn; the session stays open for more instructions"
+            >
+              Interrupt turn
+            </button>
+            <StopButton id={id} ended={ended} act={act} />
+          </div>
+        )}
+      </div>
+
+      {session.status === "interrupted" && (
+        <p className="callout warn">
+          The worker lost this agent's live process. The conversation below is history, not a live
+          agent.
+          {session.executionMode === "real" && session.providerSessionId
+            ? isOwner
+              ? " Resume continues it from the transcript saved on the worker."
+              : " The host can resume it from the transcript saved on the worker."
+            : ""}
+        </p>
+      )}
+      {session.status === "disconnected" && (
+        <p className="callout warn">
+          The worker is unreachable. The agent may still be running; updates resume when it
+          reconnects.
+        </p>
+      )}
+      {session.status === "pending" && worker && !worker.online && (
+        <p className="callout warn">
+          Waiting for worker “{worker.name}” to connect. The task starts as soon as it does.
+        </p>
+      )}
+      {session.error && <p className="callout danger">Error: {session.error}</p>}
+
+      <div className="workspace-grid">
+        <section className="card flush">
+          <div className="card-head">
+            <h3 className="grow">Activity</h3>
+            <span className="muted small">{events.length} events</span>
+          </div>
           <Activity events={events} />
           {canInstruct && !ended && (
             <Composer sessionId={id} isOwner={isOwner} onSent={scheduleRefetch} />
           )}
-          {role === "viewer" && <p className="muted small">You're a viewer: read only.</p>}
-        </div>
+          {role === "viewer" && (
+            <p className="composer muted small">You're a viewer: you can watch but not instruct.</p>
+          )}
+          {ended && canInstruct && (
+            <p className="composer muted small">
+              This task has ended; it no longer takes instructions.
+            </p>
+          )}
+        </section>
         <div className="stack">
-          <Approvals detail={detail} isOwner={isOwner} act={act} me={me} />
-          <Changes
-            lastChecks={lastChecks}
+          <Approvals detail={detail} isOwner={isOwner} act={act} />
+          <Review
+            events={events}
             detail={detail}
             isOwner={isOwner}
             canReview={canInstruct}
             act={act}
             sessionId={id}
+            me={me}
           />
         </div>
       </div>
@@ -183,24 +220,78 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
   );
 }
 
+function StopButton({ id, ended, act }: { id: string; ended: boolean; act: Act }) {
+  const dialog = useDialog();
+  return (
+    <button
+      className="danger"
+      disabled={ended}
+      onClick={async () => {
+        const ok = await dialog.confirm("Stop this task?", {
+          body: "The agent process ends and no more instructions can be sent. Its changes stay available for review.",
+          confirmLabel: "Stop task",
+          danger: true,
+        });
+        if (ok) await act(() => post(`/api/sessions/${id}/stop`), "Task stopped");
+      }}
+    >
+      Stop task
+    </button>
+  );
+}
+
+// ------------------------------------------------------------------ activity
+
+/** Bookkeeping events stay visible but de-emphasised; people's actions stand out. */
+const QUIET = new Set([
+  "session.status",
+  "instruction.delivered",
+  "changes.updated",
+  "permission.decided",
+  "agent.tool_result",
+  "checks.started",
+]);
+const HUMAN = new Set([
+  "instruction.submitted",
+  "instruction.approved",
+  "instruction.rejected",
+  "review.submitted",
+  "merge.requested",
+]);
+
 function Activity({ events }: { events: SessionEvent[] }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 200)
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 240)
       el.scrollTop = el.scrollHeight;
   }, [events.length]);
   return (
-    <section className="card">
-      <h3>Activity</h3>
-      <div className="feed" ref={ref}>
-        {events.map((e) => (
-          <EventRow key={e.seq} e={e} />
-        ))}
-        {events.length === 0 && <p className="muted">No activity yet.</p>}
-      </div>
-    </section>
+    <div className="feed card-body" ref={ref} aria-live="polite" aria-relevant="additions">
+      {events.map((e) => (
+        <EventRow key={e.seq} e={e} />
+      ))}
+      {events.length === 0 && <p className="muted">Waiting for the first activity…</p>}
+    </div>
   );
+}
+
+function toolSummary(name: string, input: unknown): string {
+  let args: any = input;
+  if (typeof input === "string") {
+    try {
+      args = JSON.parse(input);
+    } catch {
+      return input;
+    }
+  }
+  if (args && typeof args === "object") {
+    if (Array.isArray(args.argv)) return args.argv.join(" ");
+    if (typeof args.path === "string" && args.path) return args.path;
+    if (typeof args.pattern === "string") return `/${args.pattern}/`;
+    if (name === "run_tests" || name === "list_files") return "";
+  }
+  return JSON.stringify(args ?? "");
 }
 
 function EventRow({ e }: { e: SessionEvent }) {
@@ -212,11 +303,15 @@ function EventRow({ e }: { e: SessionEvent }) {
         ? "simulator"
         : "agent"
       : e.actorKind);
-  const time = new Date(e.createdAt).toLocaleTimeString();
+  const time = new Date(e.createdAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
   const body = (() => {
     switch (e.type) {
       case "session.created":
-        return `started session (${p.executionMode}, ${p.permissionPolicy})`;
+        return `started the task (${p.executionMode}, ${p.permissionPolicy === "ask_every_time" ? "asks for every tool" : "auto-accepts edits"})`;
       case "session.status":
         return `status → ${p.status}${p.detail ? ` — ${p.detail}` : ""}${p.error ? ` — ${p.error}` : ""}`;
       case "agent.init":
@@ -225,17 +320,20 @@ function EventRow({ e }: { e: SessionEvent }) {
           : `agent ready · ${p.provider ? `${p.provider} ` : ""}${p.model}${p.claudeCodeVersion ? ` · Claude Code ${p.claudeCodeVersion}` : ""}${p.resumed ? " · resumed from saved transcript" : ""}`;
       case "agent.text":
         return <div className="agent-text">{p.text ?? p.preview}</div>;
-      case "agent.tool_use":
+      case "agent.tool_use": {
+        const summary = toolSummary(p.toolName, p.input);
         return (
           <span>
-            uses <b>{p.toolName}</b> <code className="clip">{String(p.input ?? "")}</code>
+            uses <b className="tool-chip">{p.toolName}</b>{" "}
+            {summary && <span className="tool-arg mono">{summary}</span>}
           </span>
         );
+      }
       case "agent.tool_result":
         return (
           <details>
             <summary className={p.isError ? "error" : ""}>
-              {p.isError ? "tool error / denied" : "tool result"}
+              {p.isError ? "tool error / denied" : "tool output"}
             </summary>
             <pre>{p.output}</pre>
           </details>
@@ -243,19 +341,21 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "agent.result":
         return (
           <span className={p.isError ? "error" : ""}>
-            {resultLabel(p.subtype)} <code>{p.subtype}</code>
+            <b>{resultLabel(p.subtype)}</b> <code>{p.subtype}</code>
             {p.message ? ` — ${p.message}` : ""}
-            {p.lastTestRun
-              ? ` · agent's last test run: exit ${p.lastTestRun.exitCode}${p.lastTestRun.timedOut ? " (timed out)" : ""}`
-              : ""}
-            {typeof p.totalCostUsd === "number" && !p.simulated
-              ? ` · ≈$${p.totalCostUsd.toFixed(4)}${p.costIsEstimate ? " est." : ""}`
-              : ""}
-            {p.modelCallsThisTurn
-              ? ` · ${p.modelCallsThisTurn} model calls`
-              : p.numTurns
-                ? ` · ${p.numTurns} steps`
+            <span className="muted small">
+              {p.lastTestRun
+                ? ` · agent's last test run: exit ${p.lastTestRun.exitCode}${p.lastTestRun.timedOut ? " (timed out)" : ""}`
                 : ""}
+              {typeof p.totalCostUsd === "number" && !p.simulated
+                ? ` · ≈$${p.totalCostUsd.toFixed(4)}${p.costIsEstimate ? " est." : ""}`
+                : ""}
+              {p.modelCallsThisTurn
+                ? ` · ${p.modelCallsThisTurn} model calls`
+                : p.numTurns
+                  ? ` · ${p.numTurns} steps`
+                  : ""}
+            </span>
           </span>
         );
       case "checks.started":
@@ -263,7 +363,7 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "checks.completed":
         return (
           <details>
-            <summary className={p.passed ? "" : "error"}>
+            <summary className={p.passed ? "ok" : "error"}>
               project tests {p.passed ? "PASSED" : p.timedOut ? "TIMED OUT" : "FAILED"} (exit{" "}
               {String(p.exitCode)})
             </summary>
@@ -287,7 +387,7 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "permission.requested":
         return (
           <span>
-            asks to use <b>{p.toolName}</b>:{" "}
+            asks to use <b className="tool-chip">{p.toolName}</b>{" "}
             {p.title ?? <code className="clip">{JSON.stringify(p.input)}</code>}
           </span>
         );
@@ -296,11 +396,15 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "changes.updated":
         return `changes: ${p.files?.length ?? 0} file(s) at ${String(p.headCommit).slice(0, 8)}`;
       case "review.submitted":
-        return `review: ${p.decision}${p.body ? ` — ${p.body}` : ""}`;
+        return `review: ${p.decision === "approve" ? "approved" : p.decision === "request_changes" ? "requested changes" : "commented"}${p.body ? ` — ${p.body}` : ""}`;
       case "merge.requested":
         return "requested merge";
       case "merge.completed":
-        return `merged as ${String(p.mergeCommit).slice(0, 8)} (local, not pushed)`;
+        return (
+          <span className="ok">
+            merged as {String(p.mergeCommit).slice(0, 8)} (local, not pushed)
+          </span>
+        );
       case "merge.failed":
         return <span className="error">merge failed: {p.error}</span>;
       case "system.notice":
@@ -309,10 +413,13 @@ function EventRow({ e }: { e: SessionEvent }) {
         return JSON.stringify(p);
     }
   })();
+  const cls = QUIET.has(e.type) ? "quiet" : HUMAN.has(e.type) ? "human" : "";
   return (
-    <div className={`event ev-${e.type.replace(".", "-")}`}>
-      <span className="when">{time}</span> <span className="who">{who}</span>{" "}
-      <span className="what">{body}</span>
+    <div className={`event ${cls}`}>
+      <span className="when">{time}</span>
+      <span className="what">
+        <span className="who">{who}</span> {body}
+      </span>
     </div>
   );
 }
@@ -327,25 +434,37 @@ function Composer({
   onSent: () => void;
 }) {
   const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const submit = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    try {
+      await post(`/api/sessions/${sessionId}/instructions`, { text });
+      setText("");
+      if (!isOwner) toast.info("Proposed — the host will approve or reject it.");
+      onSent();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <form
-      className="card stack"
-      onSubmit={async (e) => {
+      className="composer"
+      onSubmit={(e) => {
         e.preventDefault();
-        setError(null);
-        try {
-          await post(`/api/sessions/${sessionId}/instructions`, { text });
-          setText("");
-          onSent();
-        } catch (err) {
-          setError((err as Error).message);
-        }
+        void submit();
       }}
     >
       <textarea
+        aria-label={isOwner ? "Instruction for the agent" : "Proposed instruction"}
         value={text}
         onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
+        }}
         rows={3}
         maxLength={LIMITS.instructionMaxChars}
         placeholder={
@@ -355,39 +474,37 @@ function Composer({
         }
         required
       />
-      {error && <p className="error">{error}</p>}
-      <button type="submit">{isOwner ? "Send to agent" : "Propose instruction"}</button>
+      <div className="row between">
+        <span className="muted tiny">Ctrl/⌘ + Enter to send</span>
+        <button type="submit" className="primary" disabled={busy || !text.trim()}>
+          {isOwner ? "Send to agent" : "Propose instruction"}
+        </button>
+      </div>
     </form>
   );
 }
 
-function Approvals({
-  detail,
-  isOwner,
-  act,
-}: {
-  lastChecks?: SessionEvent;
-  detail: any;
-  isOwner: boolean;
-  act: (f: () => Promise<unknown>) => void;
-  me: Me;
-}) {
+// ------------------------------------------------------------------ approvals
+
+function Approvals({ detail, isOwner, act }: { detail: any; isOwner: boolean; act: Act }) {
+  const dialog = useDialog();
   const pendingPerms = detail.permissionRequests.filter((p: any) => p.status === "pending");
   const pendingIns = detail.instructions.filter((i: any) => i.status === "pending_approval");
   if (!pendingPerms.length && !pendingIns.length) return null;
   return (
-    <section className="card stack attention">
+    <section className="card attention stack" aria-label="Waiting for the host">
       <h3>Waiting for the host</h3>
       {pendingPerms.map((p: any) => (
         <div key={p.id} className="approval">
           <div>
-            Agent wants to use <b>{p.toolName}</b>
+            Agent wants to use <b className="tool-chip">{p.toolName}</b>
             {p.title && <div className="small">{p.title}</div>}
-            <pre className="clip">{JSON.stringify(p.input, null, 2)}</pre>
           </div>
+          <pre className="clip">{JSON.stringify(p.input, null, 2)}</pre>
           {isOwner ? (
             <div className="row">
               <button
+                className="primary"
                 onClick={() =>
                   act(() => post(`/api/permissions/${p.id}/decision`, { allow: true }))
                 }
@@ -416,6 +533,7 @@ function Approvals({
           {isOwner ? (
             <div className="row">
               <button
+                className="primary"
                 onClick={() =>
                   act(() => post(`/api/instructions/${i.id}/decision`, { approve: true }))
                 }
@@ -424,9 +542,22 @@ function Approvals({
               </button>
               <button
                 className="danger"
-                onClick={() => {
-                  const note = prompt("Reason (optional)") ?? undefined;
-                  act(() => post(`/api/instructions/${i.id}/decision`, { approve: false, note }));
+                onClick={async () => {
+                  const note = await dialog.ask(
+                    "Reject this instruction?",
+                    "Reason (optional, shown to the team)",
+                    {
+                      confirmLabel: "Reject",
+                      danger: true,
+                    },
+                  );
+                  if (note === null) return;
+                  await act(() =>
+                    post(`/api/instructions/${i.id}/decision`, {
+                      approve: false,
+                      note: note || undefined,
+                    }),
+                  );
                 }}
               >
                 Reject
@@ -441,200 +572,280 @@ function Approvals({
   );
 }
 
-function Changes({
-  lastChecks,
+// ------------------------------------------------------------------ review
+
+function Review({
+  events,
   detail,
   isOwner,
   canReview,
   act,
   sessionId,
+  me,
 }: {
-  lastChecks?: SessionEvent;
+  events: SessionEvent[];
   detail: any;
   isOwner: boolean;
   canReview: boolean;
-  act: (f: () => Promise<unknown>) => void;
+  act: Act;
   sessionId: string;
+  me: Me;
 }) {
   const cs = detail.changeSet;
+  const status: SessionStatus = detail.session.status;
   const [body, setBody] = useState("");
-  const approvals = useMemo(
-    () => (cs?.reviews ?? []).filter((r: any) => r.decision === "approve").length,
-    [cs],
-  );
+  const dialog = useDialog();
+
+  const inFlux = CHANGES_IN_FLUX.includes(status);
+  // Tests count for these changes only if they ran after the latest checkpoint was recorded.
+  const lastChanges = [...events].reverse().find((e) => e.type === "changes.updated");
+  const lastChecks = [...events]
+    .reverse()
+    .find((e) => e.type === "checks.completed" || e.type === "checks.started");
+  const checksRunning = lastChecks?.type === "checks.started";
+  const checksCurrent =
+    lastChecks?.type === "checks.completed" && (!lastChanges || lastChecks.seq > lastChanges.seq);
+  const checksPassed = checksCurrent && (lastChecks!.payload as any).passed;
+
+  const reviews: any[] = cs?.reviews ?? [];
+  const approvals = useMemo(() => {
+    // A later "request changes" from the same reviewer withdraws their approval (as on the server).
+    const latest = new Map<string, any>();
+    for (const r of reviews)
+      if (r.decision !== "comment") latest.set(r.reviewerId ?? r.reviewerName, r);
+    return [...latest.values()].filter((r) => r.decision === "approve");
+  }, [cs]);
+  const myLatest = [...reviews]
+    .reverse()
+    .find((r) => r.reviewerId === me.id && r.decision !== "comment");
+  const open = cs?.status === "open";
+
+  const review = (decision: "approve" | "request_changes") =>
+    act(
+      async () => {
+        await post(`/api/changesets/${cs.id}/reviews`, { decision, body });
+        setBody("");
+      },
+      decision === "approve" ? "Approved" : "Changes requested",
+    );
+
+  const merge = () =>
+    act(async () => {
+      try {
+        await post(`/api/changesets/${cs.id}/merge`, {});
+      } catch (e) {
+        if (e instanceof ApiError && e.code === "confirm_simulated") {
+          const ok = await dialog.confirm("Merge simulated changes?", {
+            body: "These changes came from the SIMULATOR, not an AI agent. Merge them into the worker's base branch anyway?",
+            confirmLabel: "Merge anyway",
+            danger: true,
+          });
+          if (ok) await post(`/api/changesets/${cs.id}/merge`, { confirmSimulated: true });
+        } else throw e;
+      }
+    });
+
+  const mergeBlocker = !open
+    ? null
+    : inFlux
+      ? "The agent is still working; its changes may change."
+      : approvals.length < 1
+        ? "Needs at least one approving review."
+        : null;
+
   return (
-    <section className="card stack">
-      <div className="row">
+    <section className="card flush">
+      <div className="card-head">
         <h3 className="grow">Changes for review</h3>
         {canReview && (
           <button
-            className="link"
-            disabled={detail.session.status === "running" || lastChecks?.type === "checks.started"}
+            className="small"
+            disabled={inFlux || checksRunning}
             title="Run the project's configured test command on this branch, independent of the agent"
             onClick={() => act(() => post(`/api/sessions/${sessionId}/checks`))}
           >
+            {checksRunning && <span className="spinner" />}
             run tests
           </button>
         )}
-        {canReview && (
-          <button
-            className="link"
-            onClick={() => act(() => post(`/api/sessions/${sessionId}/changes/refresh`))}
+      </div>
+      <div className="card-body stack">
+        {lastChecks && (
+          <p
+            className={`small ${lastChecks.type === "checks.completed" && !(lastChecks.payload as any).passed ? "error" : ""}`}
           >
-            refresh
-          </button>
+            {checksRunning
+              ? "Project tests running…"
+              : `Project tests ${(lastChecks.payload as any).passed ? "passed" : "FAILED"} at ${new Date(lastChecks.createdAt).toLocaleTimeString()} (run by Pairloom, not reported by the agent)`}
+          </p>
+        )}
+
+        {!cs ? (
+          <p className="muted">
+            {inFlux
+              ? "The agent's edits appear here when its turn ends."
+              : "No changes yet. The agent's edits appear here after each turn."}
+          </p>
+        ) : (
+          <>
+            {cs.executionMode === "simulated" && (
+              <p className="banner sim small">Produced by the SIMULATOR, not an AI agent.</p>
+            )}
+            {open && (
+              <ul className="checklist" aria-label="Merge readiness">
+                <Check
+                  ok={!inFlux}
+                  label={
+                    inFlux
+                      ? "Agent is working — changes not final"
+                      : "Agent's turn finished; changes are final"
+                  }
+                />
+                <Check
+                  ok={!!checksPassed}
+                  bad={checksCurrent && !checksPassed}
+                  label={
+                    checksCurrent
+                      ? checksPassed
+                        ? "Tests passed on these changes"
+                        : "Tests failed on these changes"
+                      : "Tests not run on these changes yet (optional)"
+                  }
+                />
+                <Check
+                  ok={approvals.length > 0}
+                  label={
+                    approvals.length
+                      ? `Approved by ${approvals.map((r) => r.reviewerName).join(", ")}`
+                      : "No approving review yet"
+                  }
+                />
+              </ul>
+            )}
+            <p className="small muted">
+              <code>{cs.branchName}</code> {cs.baseCommit.slice(0, 8)}..{cs.headCommit.slice(0, 8)}{" "}
+              · status <b>{cs.status}</b>
+              {cs.mergeCommit && (
+                <>
+                  {" "}
+                  · merged <code>{cs.mergeCommit.slice(0, 8)}</code> locally on the worker (not
+                  pushed)
+                </>
+              )}
+            </p>
+            {cs.mergeError && <p className="callout danger small">{cs.mergeError}</p>}
+            <ul className="files">
+              {cs.files.map((f: any) => (
+                <li key={f.path}>
+                  <code>{f.path}</code> <span className="add">+{f.insertions}</span>
+                  <span className="del">-{f.deletions}</span>
+                </li>
+              ))}
+            </ul>
+            <Diff text={cs.diff} />
+            {cs.diffTruncated && <p className="callout warn small">Diff truncated for display.</p>}
+
+            {reviews.length > 0 && (
+              <div className="stack tight">
+                {reviews.map((r: any) => (
+                  <div key={r.id} className="small">
+                    <b>{r.reviewerName}</b>{" "}
+                    {r.decision === "approve"
+                      ? "approved"
+                      : r.decision === "request_changes"
+                        ? "requested changes"
+                        : "commented"}
+                    {r.body && `: ${r.body}`}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {open && canReview && (
+              <div className="stack tight">
+                <textarea
+                  rows={2}
+                  aria-label="Review comment"
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  placeholder="Review comment (optional)"
+                />
+                {inFlux && <p className="muted small">Review opens when the agent's turn ends.</p>}
+                <div className="row wrap">
+                  <button
+                    disabled={inFlux || myLatest?.decision === "approve"}
+                    title={
+                      myLatest?.decision === "approve" ? "You already approved these changes" : ""
+                    }
+                    onClick={() => review("approve")}
+                  >
+                    Approve
+                  </button>
+                  <button disabled={inFlux} onClick={() => review("request_changes")}>
+                    Request changes
+                  </button>
+                  {isOwner && (
+                    <button
+                      className="primary"
+                      disabled={!!mergeBlocker}
+                      title={mergeBlocker ?? ""}
+                      onClick={merge}
+                    >
+                      Merge into {detail.session.baseBranch}
+                    </button>
+                  )}
+                </div>
+                {isOwner && mergeBlocker && <p className="muted small">{mergeBlocker}</p>}
+              </div>
+            )}
+          </>
         )}
       </div>
-      {lastChecks && (
-        <p
-          className={`small ${lastChecks.type === "checks.completed" && !(lastChecks.payload as any).passed ? "error" : ""}`}
-        >
-          {lastChecks.type === "checks.started"
-            ? "Project tests running…"
-            : `Project tests ${(lastChecks.payload as any).passed ? "passed" : "FAILED"} at ${new Date(lastChecks.createdAt).toLocaleTimeString()} (run by Pairloom, not reported by the agent)`}
-        </p>
-      )}
-      {!cs && (
-        <p className="muted">No changes yet. The agent's edits appear here after each turn.</p>
-      )}
-      {cs && (
-        <>
-          {cs.executionMode === "simulated" && (
-            <p className="banner sim small">Produced by the SIMULATOR, not an AI agent.</p>
-          )}
-          <p className="small">
-            <code>{cs.branchName}</code> {cs.baseCommit.slice(0, 8)}..{cs.headCommit.slice(0, 8)} ·
-            status <b>{cs.status}</b>
-            {cs.mergeCommit && (
-              <>
-                {" "}
-                · merged <code>{cs.mergeCommit.slice(0, 8)}</code> locally on the worker (not
-                pushed)
-              </>
-            )}
-          </p>
-          {cs.mergeError && <p className="error">{cs.mergeError}</p>}
-          <ul className="files">
-            {cs.files.map((f: any) => (
-              <li key={f.path}>
-                <code>{f.path}</code> <span className="add">+{f.insertions}</span>{" "}
-                <span className="del">-{f.deletions}</span>
-              </li>
-            ))}
-          </ul>
-          <Diff text={cs.diff} />
-          {cs.diffTruncated && <p className="notice small">Diff truncated for display.</p>}
-          <div className="stack">
-            {cs.reviews.map((r: any) => (
-              <div key={r.id} className="small">
-                <b>{r.reviewerName}</b>{" "}
-                {r.decision === "approve"
-                  ? "approved"
-                  : r.decision === "request_changes"
-                    ? "requested changes"
-                    : "commented"}
-                {r.body && `: ${r.body}`}
-              </div>
-            ))}
-          </div>
-          {cs.status === "open" && canReview && (
-            <div className="stack">
-              <textarea
-                rows={2}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                placeholder="Review comment"
-              />
-              <div className="row wrap">
-                <button
-                  onClick={() =>
-                    act(async () => {
-                      await post(`/api/changesets/${cs.id}/reviews`, { decision: "approve", body });
-                      setBody("");
-                    })
-                  }
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() =>
-                    act(async () => {
-                      await post(`/api/changesets/${cs.id}/reviews`, {
-                        decision: "request_changes",
-                        body,
-                      });
-                      setBody("");
-                    })
-                  }
-                >
-                  Request changes
-                </button>
-                {isOwner && (
-                  <button
-                    className="primary"
-                    disabled={approvals < 1}
-                    title={approvals < 1 ? "Needs at least one approving review" : ""}
-                    onClick={() =>
-                      act(async () => {
-                        try {
-                          await post(`/api/changesets/${cs.id}/merge`, {});
-                        } catch (e) {
-                          if (e instanceof ApiError && e.code === "confirm_simulated") {
-                            if (
-                              confirm(
-                                "These changes came from the SIMULATOR, not an AI agent. Merge into the worker's base branch anyway?",
-                              )
-                            ) {
-                              await post(`/api/changesets/${cs.id}/merge`, {
-                                confirmSimulated: true,
-                              });
-                            }
-                          } else throw e;
-                        }
-                      })
-                    }
-                  >
-                    Merge into {detail.session.baseBranch}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </>
-      )}
     </section>
+  );
+}
+
+function Check({ ok, bad, label }: { ok: boolean; bad?: boolean; label: string }) {
+  return (
+    <li className={bad ? "bad" : ok ? "yes" : "no"}>
+      <span className="mark" aria-hidden>
+        {bad ? "✕" : ok ? "✓" : "○"}
+      </span>
+      <span>{label}</span>
+    </li>
   );
 }
 
 function Diff({ text }: { text: string }) {
   if (!text) return <p className="muted small">No differences from base.</p>;
   return (
-    <pre className="diff">
+    <div className="diff" role="region" aria-label="Diff">
       {text.split("\n").map((line, i) => {
         const cls =
-          line.startsWith("+++") || line.startsWith("---")
-            ? "meta"
+          line.startsWith("diff ") ||
+          line.startsWith("+++") ||
+          line.startsWith("---") ||
+          line.startsWith("index ")
+            ? "f"
             : line.startsWith("+")
-              ? "add"
+              ? "a"
               : line.startsWith("-")
-                ? "del"
+                ? "d"
                 : line.startsWith("@@")
-                  ? "hunk"
-                  : line.startsWith("diff ")
-                    ? "meta"
-                    : "";
+                  ? "h"
+                  : "";
         return (
           <div key={i} className={cls}>
             {line || " "}
           </div>
         );
       })}
-    </pre>
+    </div>
   );
 }
 
 function resultLabel(subtype: string): string {
-  if (subtype === "end_turn") return "agent finished its turn (unverified until tests and review):";
+  if (subtype === "end_turn") return "finished its turn (unverified until tests and review):";
   if (subtype === "success") return "turn ended:";
   if (subtype === "interrupted") return "turn interrupted:";
   if (subtype.startsWith("error_max") || subtype === "error_budget")

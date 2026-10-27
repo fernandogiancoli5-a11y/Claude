@@ -1,139 +1,227 @@
 import { useEffect, useState } from "react";
 import { del, get, post } from "../api.js";
 import { navigate } from "../router.js";
+import {
+  Avatar,
+  CopyButton,
+  Empty,
+  ErrorState,
+  Loading,
+  useAction,
+  useCrumbs,
+  useDialog,
+} from "../ui.js";
+import { RoleBadge } from "./badges.js";
 import type { Me } from "../App.js";
+
+const ROLE_HELP: Record<string, string> = {
+  collaborator: "Proposes instructions (the host approves them), reviews and runs tests",
+  viewer: "Read only: watches tasks and changes",
+  owner: "Full control: projects, workers, approvals and merges",
+};
 
 export function WorkspacePage({ id, me }: { id: string; me: Me }) {
   const [ws, setWs] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const load = () => get(`/api/workspaces/${id}`).then(setWs, (e) => setError(e.message));
+  useEffect(() => {
+    setWs(null);
+    void load();
+  }, [id]);
+  useCrumbs(ws ? [{ label: ws.name, href: `#/w/${id}` }] : null);
+
+  if (error) return <ErrorState message={error} onRetry={load} />;
+  if (!ws) return <Loading />;
+  const isOwner = ws.role === "owner";
+
+  return (
+    <div className="stack loose">
+      <div className="page-head">
+        <div className="title">
+          <span className="eyebrow">Team</span>
+          <h1>{ws.name}</h1>
+          <p className="muted">
+            You're {ws.role === "owner" ? "an" : "a"} <b>{ws.role}</b>. {ROLE_HELP[ws.role]}.
+          </p>
+        </div>
+      </div>
+
+      <div className="workspace-grid">
+        <section className="card flush">
+          <div className="card-head">
+            <h3 className="grow">Projects</h3>
+          </div>
+          {ws.projects.length === 0 ? (
+            <Empty title="No projects yet">
+              {isOwner
+                ? "Add a project for each repository your team works on."
+                : "An owner will add projects here."}
+            </Empty>
+          ) : (
+            <div>
+              {ws.projects.map((p: any) => (
+                <a key={p.id} className="task-row" href={`#/p/${p.id}`}>
+                  <div className="meta">
+                    <b>{p.name}</b>
+                    <span className="muted small">
+                      base branch <code>{p.defaultBranch}</code>
+                    </span>
+                  </div>
+                  <span aria-hidden className="muted">
+                    →
+                  </span>
+                </a>
+              ))}
+            </div>
+          )}
+          {isOwner && <AddProject workspaceId={id} />}
+        </section>
+
+        <Members ws={ws} me={me} isOwner={isOwner} reload={load} />
+      </div>
+    </div>
+  );
+}
+
+function AddProject({ workspaceId }: { workspaceId: string }) {
+  const [name, setName] = useState("");
+  const [branch, setBranch] = useState("main");
+  const { busy, run } = useAction();
+  return (
+    <form
+      className="composer"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const p = await run(() =>
+          post(`/api/workspaces/${workspaceId}/projects`, {
+            name,
+            defaultBranch: branch,
+            repoUrl: null,
+          }),
+        );
+        if (p) navigate(`/p/${p.id}`);
+      }}
+    >
+      <div className="form-grid">
+        <label>
+          Project name
+          <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} />
+        </label>
+        <label>
+          Base branch
+          <input value={branch} onChange={(e) => setBranch(e.target.value)} required />
+        </label>
+      </div>
+      <div className="row end">
+        <button type="submit" className="primary" disabled={busy}>
+          Add project
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Members({
+  ws,
+  me,
+  isOwner,
+  reload,
+}: {
+  ws: any;
+  me: Me;
+  isOwner: boolean;
+  reload: () => void;
+}) {
+  const [role, setRole] = useState("collaborator");
   const [invite, setInvite] = useState<{
     inviteUrl: string;
     role: string;
     expiresAt: string;
   } | null>(null);
-  const [role, setRole] = useState("collaborator");
-  const [projectName, setProjectName] = useState("tiny-cart");
-  const [branch, setBranch] = useState("main");
-  const [repoUrl, setRepoUrl] = useState("");
-
-  const load = () => get(`/api/workspaces/${id}`).then(setWs, (e) => setError(e.message));
-  useEffect(() => {
-    void load();
-  }, [id]);
-
-  if (error) return <p className="error">{error}</p>;
-  if (!ws) return <p className="muted">Loading…</p>;
-  const isOwner = ws.role === "owner";
-
+  const { busy, run } = useAction();
+  const dialog = useDialog();
   return (
-    <div className="stack">
-      <h2>
-        {ws.name} <span className="badge">{ws.role}</span>
-      </h2>
-
-      <section className="card stack">
-        <h3>Projects</h3>
-        {ws.projects.length === 0 && <p className="muted">No projects yet.</p>}
-        <ul className="list">
-          {ws.projects.map((p: any) => (
-            <li key={p.id}>
-              <a href={`#/p/${p.id}`}>{p.name}</a>{" "}
-              <span className="muted">base branch {p.defaultBranch}</span>
-            </li>
-          ))}
-        </ul>
-        {isOwner && (
-          <form
-            className="row wrap"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              try {
-                const p = await post(`/api/workspaces/${id}/projects`, {
-                  name: projectName,
-                  defaultBranch: branch,
-                  repoUrl: repoUrl || null,
-                });
-                navigate(`/p/${p.id}`);
-              } catch (err) {
-                setError((err as Error).message);
-              }
-            }}
-          >
-            <input
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              placeholder="Project name"
-              required
-            />
-            <input
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              placeholder="Base branch"
-              required
-            />
-            <input
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-              placeholder="Repo URL (reference only)"
-            />
-            <button type="submit">Add project</button>
-          </form>
-        )}
-      </section>
-
-      <section className="card stack">
-        <h3>Members</h3>
+    <section className="card flush">
+      <div className="card-head">
+        <h3 className="grow">Members</h3>
+        <span className="muted small">{ws.members.length}</span>
+      </div>
+      <div className="card-body stack">
         <ul className="list">
           {ws.members.map((m: any) => (
             <li key={m.id}>
-              {m.displayName} <span className="muted">{m.email}</span>{" "}
-              <span className="badge">{m.role}</span>
+              <Avatar name={m.displayName} id={m.id} />
+              <div className="grow" style={{ minWidth: 0 }}>
+                <div>
+                  {m.displayName} {m.id === me.id && <span className="muted small">(you)</span>}
+                </div>
+                <div className="muted small">{m.email}</div>
+              </div>
+              <RoleBadge role={m.role} />
               {isOwner && m.id !== me.id && (
                 <button
-                  className="link danger"
+                  className="link danger small"
+                  aria-label={`Remove ${m.displayName}`}
                   onClick={async () => {
-                    if (!confirm(`Remove ${m.displayName} from this workspace?`)) return;
-                    await del(`/api/workspaces/${id}/members/${m.id}`).catch((e) =>
-                      setError(e.message),
+                    const ok = await dialog.confirm(`Remove ${m.displayName}?`, {
+                      body: "They lose access to every project in this team immediately.",
+                      confirmLabel: "Remove",
+                      danger: true,
+                    });
+                    if (!ok) return;
+                    await run(
+                      () => del(`/api/workspaces/${ws.id}/members/${m.id}`),
+                      "Member removed",
                     );
-                    void load();
+                    reload();
                   }}
                 >
-                  remove
+                  Remove
                 </button>
               )}
             </li>
           ))}
         </ul>
+
         {isOwner && (
-          <div className="stack">
-            <div className="row">
+          <div className="stack tight">
+            <h4>Invite someone</h4>
+            <label>
+              Role
               <select value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="collaborator">
-                  collaborator — can send instructions (needs owner approval) and review
-                </option>
-                <option value="viewer">viewer — read only</option>
-                <option value="owner">owner — full control</option>
+                {Object.entries(ROLE_HELP).map(([r, help]) => (
+                  <option key={r} value={r}>
+                    {r} — {help.toLowerCase()}
+                  </option>
+                ))}
               </select>
+            </label>
+            <div className="row">
               <button
-                onClick={async () =>
-                  setInvite(await post(`/api/workspaces/${id}/invitations`, { role }))
-                }
+                disabled={busy}
+                onClick={async () => {
+                  const r = await run(() => post(`/api/workspaces/${ws.id}/invitations`, { role }));
+                  if (r) setInvite(r);
+                }}
               >
                 Create invite link
               </button>
             </div>
             {invite && (
-              <p className="notice">
-                Single-use {invite.role} invite (expires{" "}
-                {new Date(invite.expiresAt).toLocaleString()}):
-                <br />
-                <code className="select">{invite.inviteUrl}</code>
-              </p>
+              <div className="callout info stack tight">
+                <span className="small">
+                  Single-use <b>{invite.role}</b> link, expires{" "}
+                  {new Date(invite.expiresAt).toLocaleString()}. Send it privately.
+                </span>
+                <div className="row">
+                  <code className="select grow">{invite.inviteUrl}</code>
+                  <CopyButton text={invite.inviteUrl} />
+                </div>
+              </div>
             )}
           </div>
         )}
-      </section>
-    </div>
+      </div>
+    </section>
   );
 }

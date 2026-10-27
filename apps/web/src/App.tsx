@@ -4,10 +4,19 @@ import { navigate, useRoute } from "./router.js";
 import { useRealtimeOnline } from "./realtime.js";
 import { AuthPage } from "./pages/Auth.js";
 import { InvitePage } from "./pages/Invite.js";
-import { WorkspacesPage } from "./pages/Workspaces.js";
+import { HomePage } from "./pages/Home.js";
 import { WorkspacePage } from "./pages/Workspace.js";
 import { ProjectPage } from "./pages/Project.js";
 import { SessionPage } from "./pages/Session.js";
+import {
+  Avatar,
+  CrumbProvider,
+  Crumbs,
+  DialogProvider,
+  Loading,
+  Logo,
+  ToastProvider,
+} from "./ui.js";
 
 export interface Me {
   id: string;
@@ -16,6 +25,18 @@ export interface Me {
 }
 
 export function App() {
+  return (
+    <ToastProvider>
+      <DialogProvider>
+        <CrumbProvider>
+          <Shell />
+        </CrumbProvider>
+      </DialogProvider>
+    </ToastProvider>
+  );
+}
+
+function Shell() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const route = useRoute();
 
@@ -31,7 +52,7 @@ export function App() {
     return () => window.removeEventListener("pl:unauthenticated", on);
   }, []);
 
-  if (me === undefined) return <div className="center muted">Loading…</div>;
+  if (me === undefined) return <Loading label="Loading Pairloom…" />;
 
   const inviteToken = route[0] === "invite" ? route[1] : undefined;
   if (!me) return <AuthPage inviteToken={inviteToken} onAuthed={refresh} />;
@@ -39,22 +60,27 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <a href="#/" className="brand">
-          Pairloom
+        <a href="#/" className="brand" aria-label="Pairloom dashboard">
+          <Logo />
+          <span>Pairloom</span>
         </a>
-        <ConnectionDot />
+        <Crumbs />
         <span className="spacer" />
-        <span className="muted">{me.displayName}</span>
-        <button
-          className="link"
-          onClick={async () => {
-            await post("/api/auth/logout");
-            setMe(null);
-            navigate("/");
-          }}
-        >
-          Sign out
-        </button>
+        <ConnectionDot />
+        <div className="user-menu">
+          <Avatar name={me.displayName} id={me.id} />
+          <span className="name">{me.displayName}</span>
+          <button
+            className="link"
+            onClick={async () => {
+              await post("/api/auth/logout");
+              setMe(null);
+              navigate("/");
+            }}
+          >
+            Sign out
+          </button>
+        </div>
       </header>
       <main className="content">
         <Routed route={route} me={me} />
@@ -68,9 +94,9 @@ function ConnectionDot() {
   return (
     <span
       className={`conn ${online ? "ok" : "bad"}`}
-      title={online ? "Realtime connected" : "Realtime reconnecting…"}
+      title={online ? "Live updates connected" : "Live updates reconnecting…"}
     >
-      {online ? "live" : "reconnecting…"}
+      ● <span className="label">{online ? "live" : "reconnecting…"}</span>
     </span>
   );
 }
@@ -81,5 +107,5 @@ function Routed({ route, me }: { route: string[]; me: Me }) {
   if (a === "w" && b) return <WorkspacePage id={b} me={me} />;
   if (a === "p" && b) return <ProjectPage id={b} me={me} />;
   if (a === "s" && b) return <SessionPage id={b} me={me} />;
-  return <WorkspacesPage />;
+  return <HomePage me={me} />;
 }
