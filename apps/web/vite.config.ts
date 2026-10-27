@@ -12,5 +12,7 @@ export default defineConfig({
       "/ws": { target: api.replace("http", "ws"), ws: true },
     },
   },
+  // Relative asset URLs: the same build works at "/" and under "/app/" (see SITE_DIST_DIR).
+  base: "./",
   build: { outDir: "dist" },
 });

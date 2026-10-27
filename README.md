@@ -73,6 +73,26 @@ GROQ_API_KEY=... PAIRLOOM_REAL_PROVIDER_TEST=1 npm run test:real
 GROQ_API_KEY=... PROVIDER=groq node scripts/agent-scenario.mjs
 ```
 
+## Public site and waitlist
+
+`apps/site` is the public marketing page with the early-access waitlist (plain HTML/CSS/TS,
+no third-party scripts). Signups go to `POST /api/waitlist` on the Pairloom server and are stored
+in the same SQLite database (`waitlist` table: email, optional role, timestamp; no IP or tracking
+data). Duplicates are idempotent, and honeypot/too-fast submissions and more than 5 attempts per IP
+per 10 minutes are rejected.
+
+```bash
+npm run dev                 # server + app
+npm run dev:site            # site on :5174, proxying /api to the server
+npm run smoke:site          # build + browser test of the site and a real signup (throwaway DB)
+npm run waitlist:export     # CSV of signups from data/pairloom.sqlite (server-side only)
+node scripts/site-screenshots.mjs   # re-capture the product screenshots (simulator, no model calls)
+```
+
+To serve it, build with `PAIRLOOM_CONTACT_EMAIL=you@yourdomain npm run build` and set
+`SITE_DIST_DIR=./apps/site/dist` next to `WEB_DIST_DIR`: the site is then served at `/`, the app at
+`/app/`, and invite links (`/invite/<token>`) redirect into the app.
+
 ## Deploying privately (not yet done; see Thursday in PROJECT_PLAN.md)
 
 - **Server:** `npm ci && npm run build`. Set `PUBLIC_ORIGIN=https://…`,

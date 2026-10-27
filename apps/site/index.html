@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pairloom — Build with AI, together</title>
+    <meta
+      name="description"
+      content="Pairloom is a shared workspace where your team works alongside one AI coding agent: watch it live, steer it, approve what it does, and review its changes before they merge. Join the early-access waitlist."
+    />
+    <meta name="theme-color" content="#4353d6" />
+    <meta property="og:title" content="Pairloom — Build with AI, together" />
+    <meta
+      property="og:description"
+      content="A shared workspace for building software with an AI agent, as a team. Early access waitlist open."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/screens/review.jpg" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      document.documentElement.classList.add("js");
+    </script>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="nav" data-nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="/" aria-label="Pairloom home">
+          <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="6" />
+            <path d="M7 15.5c0-2.5 2-4 5-4s5-1.5 5-4M7 8.5c0 2.5 2 4 5 4s5 1.5 5 4" />
+          </svg>
+          Pairloom
+        </a>
+        <nav class="nav-links" aria-label="Sections">
+          <a href="#how">How it works</a>
+          <a href="#product">Product</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+        <a class="btn btn-primary btn-sm" href="#join">Join the waitlist</a>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- Hero -->
+      <section class="hero">
+        <svg class="threads" viewBox="0 0 1200 600" preserveAspectRatio="none" aria-hidden="true">
+          <path class="t t1" d="M-20 140 C 260 40, 420 300, 640 200 S 1000 60, 1220 180" />
+          <path class="t t2" d="M-20 260 C 220 360, 460 120, 700 260 S 1020 380, 1220 250" />
+          <path class="t t3" d="M-20 400 C 300 300, 520 520, 760 380 S 1040 300, 1220 420" />
+        </svg>
+        <div class="wrap hero-inner">
+          <p class="eyebrow reveal">
+            <span class="pill">Early access</span> Now inviting small teams
+          </p>
+          <h1 class="reveal">Build with AI, <em>together.</em></h1>
+          <p class="lede reveal">
+            Pairloom is a shared workspace where your team works alongside one AI coding agent.
+            Everyone watches it work live, teammates steer it, a human approves what it does — and
+            its changes are tested and reviewed before they merge.
+          </p>
+          <div class="reveal">
+            <form class="waitlist" data-waitlist novalidate>
+              <div class="field-row">
+                <label class="sr-only" for="hero-email">Work email</label>
+                <input
+                  id="hero-email"
+                  name="email"
+                  type="email"
+                  inputmode="email"
+                  autocomplete="email"
+                  placeholder="you@company.com"
+                  required
+                  maxlength="254"
+                />
+                <button class="btn btn-primary" type="submit">Join the waitlist</button>
+              </div>
+              <div class="hp" aria-hidden="true">
+                <label>Website <input name="website" tabindex="-1" autocomplete="off" /></label>
+              </div>
+              <p class="form-note" data-status role="status" aria-live="polite">
+                One email when your spot opens. No newsletter, no sharing.
+                <a href="/privacy.html">Privacy</a>
+              </p>
+            </form>
+          </div>
+        </div>
+        <div class="wrap">
+          <figure class="frame hero-shot reveal">
+            <div class="frame-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+            <img
+              src="/screens/approvals.jpg"
+              width="2560"
+              height="1600"
+              alt="Pairloom task view: the activity feed on the left shows the agent's steps and a teammate's proposed instruction; on the right, the host is asked to allow a command and to approve the teammate's proposal."
+              fetchpriority="high"
+            />
+          </figure>
+          <p class="caption reveal">
+            The real Pairloom interface. These captures use its built-in simulator, which is
+            labelled in the app — no AI model was called to make them.
+          </p>
+        </div>
+      </section>
+
+      <!-- Problem -->
+      <section class="section band">
+        <div class="wrap two-col">
+          <div class="reveal">
+            <p class="kicker">Why Pairloom</p>
+            <h2>Coding agents are built for one person at a keyboard.</h2>
+          </div>
+          <div class="reveal prose">
+            <p>
+              When an agent writes code, the rest of the team usually sees the result, not the work:
+              a pull request that appears out of nowhere, a terminal session nobody else could
+              follow, and decisions nobody else got to weigh in on.
+            </p>
+            <p>
+              Pairloom puts the agent in a room the whole team can see into. The work streams live
+              to everyone, changes stay on their own branch, and a person stays responsible for
+              every step that matters.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section class="section" id="how">
+        <div class="wrap">
+          <div class="section-head reveal">
+            <p class="kicker">How it works</p>
+            <h2>From request to merged change, with people in the loop.</h2>
+          </div>
+          <ol class="steps">
+            <li class="step reveal">
+              <span class="step-num">1</span>
+              <h3>Start a task</h3>
+              <p>
+                Describe what to build. The agent gets its own git branch, isolated from your main
+                branch and from every other task.
+              </p>
+            </li>
+            <li class="step reveal">
+              <span class="step-num">2</span>
+              <h3>Watch it together</h3>
+              <p>
+                Every file read, edit and command streams live to the whole team, in any browser.
+                Closing yours doesn't stop the agent.
+              </p>
+            </li>
+            <li class="step reveal">
+              <span class="step-num">3</span>
+              <h3>Steer and approve</h3>
+              <p>
+                Teammates propose instructions; the task's host approves them before the agent sees
+                them, and decides on any command that needs permission.
+              </p>
+            </li>
+            <li class="step reveal">
+              <span class="step-num">4</span>
+              <h3>Verify, review, merge</h3>
+              <p>
+                Pairloom runs your project's tests itself. Reviewers read the real diff, approve,
+                and only then can the host merge.
+              </p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- Product -->
+      <section class="section" id="product">
+        <div class="wrap">
+          <div class="section-head reveal">
+            <p class="kicker">The product</p>
+            <h2>One screen for the agent's work and the team's decisions.</h2>
+          </div>
+
+          <div class="feature reveal">
+            <div class="feature-copy">
+              <h3>Review that means something</h3>
+              <p>
+                Changes appear as a real git diff when the agent's turn ends. A readiness checklist
+                shows whether the work is final, whether tests passed on exactly these changes, and
+                who approved — and merging stays locked until someone does.
+              </p>
+              <ul class="ticks">
+                <li>Tests are run by Pairloom, not reported by the agent</li>
+                <li>Approvals are tied to the exact change set</li>
+                <li>A newer change from the agent needs a fresh review</li>
+              </ul>
+            </div>
+            <figure class="frame">
+              <div class="frame-bar" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </div>
+              <img
+                src="/screens/review.jpg"
+                width="2560"
+                height="1600"
+                loading="lazy"
+                decoding="async"
+                alt="Pairloom review panel: a checklist shows the agent's turn finished, tests passed on these changes, and approval by a teammate, above the diff of the changed file."
+              />
+            </figure>
+          </div>
+
+          <div class="feature flip reveal">
+            <div class="feature-copy">
+              <h3>Your team's work at a glance</h3>
+              <p>
+                The dashboard shows every project you belong to, its latest task, whether its worker
+                is online, and anything waiting on you — approvals to give and changes to review.
+              </p>
+              <ul class="ticks">
+                <li>Teams with owner, collaborator and viewer roles</li>
+                <li>Single-use invite links</li>
+                <li>Access enforced by the server, not just hidden in the UI</li>
+              </ul>
+            </div>
+            <figure class="frame">
+              <div class="frame-bar" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </div>
+              <img
+                src="/screens/dashboard.jpg"
+                width="2560"
+                height="1600"
+                loading="lazy"
+                decoding="async"
+                alt="Pairloom dashboard listing a project card with its team, latest task status and worker status, and the user's teams."
+              />
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- Trust -->
+      <section class="section band">
+        <div class="wrap">
+          <div class="section-head reveal">
+            <p class="kicker">Built to be trusted</p>
+            <h2>The agent works for the team, on terms the team sets.</h2>
+          </div>
+          <div class="grid3">
+            <div class="card reveal">
+              <h3>Your code stays with your worker</h3>
+              <p>
+                The agent runs in a small worker process next to a clone of your repository — on a
+                teammate's machine or your own server. Collaborators never get shell access to it.
+              </p>
+            </div>
+            <div class="card reveal">
+              <h3>Risky actions wait for a person</h3>
+              <p>
+                File edits can be auto-accepted on the task branch; deleting files and running
+                arbitrary commands need the host's approval. Network tools are refused.
+              </p>
+            </div>
+            <div class="card reveal">
+              <h3>Survives the real world</h3>
+              <p>
+                Interrupt a turn at any time. If the worker restarts mid-task, Pairloom says so
+                plainly and the host can resume from the saved transcript.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- FAQ -->
+      <section class="section" id="faq">
+        <div class="wrap faq-wrap">
+          <div class="section-head reveal">
+            <p class="kicker">FAQ</p>
+            <h2>Straight answers.</h2>
+          </div>
+          <div class="faq">
+            <details class="reveal">
+              <summary>Is Pairloom available now?</summary>
+              <p>
+                It's in early access. The core workflow — shared tasks, approvals, independent test
+                runs, review and merge — works today, and we're onboarding small teams from the
+                waitlist.
+              </p>
+            </details>
+            <details class="reveal">
+              <summary>Which AI model does it use?</summary>
+              <p>
+                Today the agent runs on <code>openai/gpt-oss-120b</code> hosted by Groq, using your
+                own API key on your worker. Pairloom's agent harness speaks the OpenAI-compatible
+                API, so other providers are a configuration change rather than a rewrite.
+              </p>
+            </details>
+            <details class="reveal">
+              <summary>Where does my code run?</summary>
+              <p>
+                On the worker you connect: a process with its own clone of your repository. The
+                Pairloom server coordinates the team and stores the task history; the worker dials
+                out to it.
+              </p>
+            </details>
+            <details class="reveal">
+              <summary>What isn't there yet?</summary>
+              <p>
+                Merges currently land on the worker's local branch; pushing to GitHub and opening
+                pull requests is not built yet. Invitations are links you share yourself (no email
+                delivery), and there's no password reset yet.
+              </p>
+            </details>
+            <details class="reveal">
+              <summary>What happens to my email address?</summary>
+              <p>
+                We store it with the time you signed up (and your role, if you choose one) so we can
+                invite you. Nothing else. <a href="/privacy.html">Read the privacy note</a>.
+              </p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- Final CTA -->
+      <section class="section cta" id="join">
+        <div class="wrap cta-inner reveal">
+          <h2>Bring your team. Bring the agent.</h2>
+          <p class="lede">
+            Join the early-access waitlist and we'll let you know when there's a spot for your team.
+          </p>
+          <form class="waitlist" data-waitlist novalidate>
+            <div class="field-row">
+              <label class="sr-only" for="cta-email">Work email</label>
+              <input
+                id="cta-email"
+                name="email"
+                type="email"
+                inputmode="email"
+                autocomplete="email"
+                placeholder="you@company.com"
+                required
+                maxlength="254"
+              />
+              <button class="btn btn-primary" type="submit">Join the waitlist</button>
+            </div>
+            <label class="role">
+              <span>I'm mostly… <span class="muted">(optional)</span></span>
+              <select name="role">
+                <option value="">Prefer not to say</option>
+                <option value="engineer">An engineer</option>
+                <option value="founder">A founder</option>
+                <option value="product">In product or design</option>
+                <option value="student">A student</option>
+                <option value="other">Something else</option>
+              </select>
+            </label>
+            <div class="hp" aria-hidden="true">
+              <label>Website <input name="website" tabindex="-1" autocomplete="off" /></label>
+            </div>
+            <p class="form-note" data-status role="status" aria-live="polite">
+              One email when your spot opens. No newsletter, no sharing.
+              <a href="/privacy.html">Privacy</a>
+            </p>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap footer-inner">
+        <span class="brand small">
+          <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="6" />
+            <path d="M7 15.5c0-2.5 2-4 5-4s5-1.5 5-4M7 8.5c0 2.5 2 4 5 4s5 1.5 5 4" />
+          </svg>
+          Pairloom
+        </span>
+        <nav aria-label="Footer">
+          <a href="/privacy.html">Privacy</a>
+          <a href="/app/">Sign in</a>
+        </nav>
+        <span class="muted">© <span data-year>2026</span> Pairloom</span>
+      </div>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

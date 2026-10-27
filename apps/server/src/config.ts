@@ -21,6 +21,11 @@ export interface ServerConfig {
   openSignup: boolean;
   /** Directory with the built web app to serve, if any. */
   webDistDir: string | null;
+  /**
+   * Directory with the built public site, if any. When set, the site is served at "/"
+   * and the web app moves to "/app/"; when unset, the web app stays at "/".
+   */
+  siteDistDir: string | null;
   /** Interval for server-side WebSocket liveness pings; a socket missing one is dropped. */
   heartbeatMs: number;
 }
@@ -45,6 +50,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     inviteTtlHours: Number(env.INVITE_TTL_HOURS ?? 72),
     openSignup: env.OPEN_SIGNUP !== "false",
     webDistDir: env.WEB_DIST_DIR ? fromRoot(env.WEB_DIST_DIR) : null,
+    siteDistDir: env.SITE_DIST_DIR ? fromRoot(env.SITE_DIST_DIR) : null,
     heartbeatMs: Number(env.WS_HEARTBEAT_MS ?? 20_000),
   };
 }

@@ -11,6 +11,7 @@ import { AuthService, SESSION_COOKIE } from "./auth.js";
 import { Core, HttpError } from "./core.js";
 import { type Db, openDb } from "./db.js";
 import { Hub } from "./hub.js";
+import { RateLimiter, Waitlist, WaitlistInput } from "./waitlist.js";
 
 export interface App {
   fastify: FastifyInstance;
@@ -40,6 +41,8 @@ export async function buildApp(
     trustProxy: process.env.TRUST_PROXY === "true",
   });
   const core = new Core(db);
+  const waitlist = new Waitlist(db);
+  const waitlistLimiter = new RateLimiter(5, 10 * 60_000);
   const hub = new Hub(core, config.heartbeatMs);
   core.notifier = hub;
   const auth = new AuthService(db, config);
@@ -124,11 +127,11 @@ export async function buildApp(
 
   // -------------------------------------------------------- workspaces
 
+  fastify.get("/api/dashboard", async (req) => core.getDashboard(user(req).id));
+
   fastify.get("/api/workspaces", async (req) => ({
     workspaces: core.listWorkspaces(user(req).id),
   }));
-  fastify.get("/api/dashboard", async (req) => core.getDashboard(user(req).id));
-
 
   fastify.post("/api/workspaces", async (req) => {
     const { name } = body(z.object({ name: Name }), req);
@@ -297,6 +300,22 @@ export async function buildApp(
 
   fastify.get("/api/health", async () => ({ ok: true }));
 
+  // ------------------------------------------------------- public waitlist
+
+  // Unauthenticated, so it gets its own per-IP limit on top of the honeypot checks.
+  fastify.post("/api/waitlist", async (req, reply) => {
+    if (!waitlistLimiter.allow(req.ip)) {
+      return reply
+        .status(429)
+        .send({ error: "Too many attempts. Please try again in a few minutes." });
+    }
+    const input = body(WaitlistInput, req);
+    const outcome = waitlist.join(input);
+    if (outcome === "joined") fastify.log.info("waitlist signup");
+    // Same response for new and existing addresses (and for dropped spam).
+    return { ok: true };
+  });
+
   // --------------------------------------------------------- realtime
 
   fastify.register(async (scope) => {
@@ -319,8 +338,33 @@ export async function buildApp(
   // ------------------------------------------------------- web bundle
 
   const dist = config.webDistDir ? resolve(config.webDistDir) : null;
-  if (dist && existsSync(dist)) {
+  const site = config.siteDistDir ? resolve(config.siteDistDir) : null;
+  if (site && existsSync(site) && dist && existsSync(dist)) {
+    // Public site at "/", web app at "/app/". Invite links keep their /invite/<token> form.
+    await fastify.register(fastifyStatic, { root: site, wildcard: false });
+    await fastify.register(fastifyStatic, {
+      root: dist,
+      prefix: "/app/",
+      wildcard: false,
+      decorateReply: false,
+    });
+    fastify.get("/app", async (_req, reply) => reply.redirect("/app/"));
+    fastify.get("/invite/:token", async (req, reply) =>
+      reply.redirect(`/app/#/invite/${encodeURIComponent(param(req, "token"))}`),
+    );
+    fastify.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith("/api") || req.url.startsWith("/ws")) {
+        return reply.status(404).send({ error: "Not found" });
+      }
+      if (req.url.startsWith("/app/")) return reply.sendFile("index.html", dist);
+      return reply.status(404).sendFile("404.html", site);
+    });
+  } else if (dist && existsSync(dist)) {
     await fastify.register(fastifyStatic, { root: dist, wildcard: false });
+    // The app uses relative asset URLs and hash routes, so it is only ever served at "/".
+    fastify.get("/invite/:token", async (req, reply) =>
+      reply.redirect(`/#/invite/${encodeURIComponent(param(req, "token"))}`),
+    );
     fastify.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith("/api") || req.url.startsWith("/ws")) {
         return reply.status(404).send({ error: "Not found" });

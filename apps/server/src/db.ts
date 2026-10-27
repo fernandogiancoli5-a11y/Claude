@@ -182,6 +182,16 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX worker_commands_pending ON worker_commands(worker_id, status, created_at);
   `,
+  // Early-access waitlist from the public site. Only what is needed to send an invite:
+  // no IP address, user agent or tracking data is stored.
+  `
+  CREATE TABLE waitlist (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    role TEXT,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 export function openDb(path: string): Db {
