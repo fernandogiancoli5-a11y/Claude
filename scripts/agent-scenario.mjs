@@ -35,10 +35,29 @@ const children = [];
 const step = (msg) => console.log(`✓ ${msg}`);
 const note = (msg) => console.log(`  · ${msg}`);
 
+// Network settings the worker's own env allowlist also passes through (apps/worker/src/config.ts),
+// so a real provider is reachable behind a proxy or TLS-inspecting gateway.
+const NETWORK_ENV = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+];
+const networkEnv = Object.fromEntries(
+  NETWORK_ENV.filter((k) => process.env[k]).map((k) => [k, process.env[k]]),
+);
+
 function run(name, args, env) {
   const p = spawn("npx", ["tsx", ...args], {
     cwd: root,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_NO_WARNINGS: "1", ...env },
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      NODE_NO_WARNINGS: "1",
+      ...networkEnv,
+      ...env,
+    },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
@@ -210,6 +229,13 @@ try {
     AGENT_MAX_COST_USD_PER_SESSION: "0.25",
     AGENT_MAX_TURN_SECONDS: "300",
   };
+    // Optional overrides: low-tier provider accounts hit per-minute token limits, and every
+    // retry counts toward the model-call cap.
+    ...Object.fromEntries(
+      ["LLM_MAX_RETRIES", "LLM_MAX_RETRY_WAIT_SEC", "AGENT_MAX_MODEL_CALLS_PER_SESSION"]
+        .filter((k) => process.env[k])
+        .map((k) => [k, process.env[k]]),
+    ),
   const startWorker = () => run("worker", ["apps/worker/src/index.ts"], workerEnv);
   let worker = startWorker();
   await waitFor(() => owner.getByText("online", { exact: true }).isVisible(), "worker online");

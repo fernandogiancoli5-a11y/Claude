@@ -75,6 +75,18 @@ export function loadHarnessLimits(env: NodeJS.ProcessEnv = process.env): Harness
         : numEnv(env, "AGENT_MAX_COST_USD_PER_SESSION", DEFAULT_LIMITS.maxCostUsdPerSession!),
     commandTimeoutMs:
       numEnv(env, "AGENT_COMMAND_TIMEOUT_SECONDS", DEFAULT_LIMITS.commandTimeoutMs / 1000) * 1000,
-    maxContextChars: numEnv(env, "AGENT_MAX_CONTEXT_CHARS", DEFAULT_LIMITS.maxContextChars),
+    maxContextChars: numEnv(env, "AGENT_MAX_CONTEXT_CHARS", defaultContextChars(env)),
   };
+}
+
+/**
+ * Groq's free tier rejects any request its own pre-count puts over 8,000 tokens per minute
+ * (input only; measured at ~3.7 chars/token of JSON, tool schemas included). 22,000 chars of
+ * messages plus ~2,700 of tool schemas stays near 6,700 of those tokens.
+ */
+export const GROQ_CONTEXT_CHARS = 22_000;
+
+function defaultContextChars(env: NodeJS.ProcessEnv) {
+  const groq = (env.LLM_PROVIDER ?? "groq").toLowerCase() === "groq" && !env.LLM_BASE_URL;
+  return groq ? GROQ_CONTEXT_CHARS : DEFAULT_LIMITS.maxContextChars;
 }

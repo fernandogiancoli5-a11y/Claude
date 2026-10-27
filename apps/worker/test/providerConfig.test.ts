@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { loadHarnessLimits, loadProviderConfig } from "../src/harness/config.js";
-import { classifyHttpError } from "../src/harness/provider.js";
+import { DEFAULT_LIMITS } from "../src/harness/agent.js";
+import {
+  GROQ_CONTEXT_CHARS,
+  loadHarnessLimits,
+  loadProviderConfig,
+} from "../src/harness/config.js";
+import { classifyHttpError, parseResetMs } from "../src/harness/provider.js";
 
 describe("provider configuration", () => {
   it("defaults to Groq gpt-oss-120b with published pricing, reading the key from GROQ_API_KEY", () => {
@@ -45,6 +50,11 @@ describe("provider error classification", () => {
     [429, '{"error":{"message":"Rate limit reached for model"}}', "rate_limited"],
     [
       429,
+      '{"error":{"message":"Rate limit reached for model `openai/gpt-oss-120b` on tokens per minute (TPM). Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing","type":"tokens","code":"rate_limit_exceeded"}}',
+      "rate_limited",
+    ],
+    [
+      429,
       '{"error":{"message":"You exceeded your current quota","code":"insufficient_quota"}}',
       "quota_or_billing",
     ],
@@ -59,5 +69,29 @@ describe("provider error classification", () => {
     [400, '{"error":{"message":"bad"}}', "bad_request"],
   ])("%s %s -> %s", (status, body, kind) => {
     expect(classifyHttpError(cfg, status as number, body as string, "3").kind).toBe(kind);
+  });
+});
+
+describe("request budget", () => {
+  it("parses provider reset durations", () => {
+    expect(parseResetMs("7.66s")).toBe(7660);
+    expect(parseResetMs("450ms")).toBe(450);
+    expect(parseResetMs("1m2.5s")).toBe(62_500);
+    expect(parseResetMs("2m")).toBe(120_000);
+    expect(parseResetMs("soon")).toBeNull();
+    expect(parseResetMs(null)).toBeNull();
+  });
+
+  it("defaults the context budget to Groq's free-tier size only for Groq", () => {
+    expect(loadHarnessLimits({}).maxContextChars).toBe(GROQ_CONTEXT_CHARS);
+    expect(loadHarnessLimits({ LLM_PROVIDER: "groq" }).maxContextChars).toBe(GROQ_CONTEXT_CHARS);
+    expect(loadHarnessLimits({ LLM_PROVIDER: "openai" }).maxContextChars).toBe(
+      DEFAULT_LIMITS.maxContextChars,
+    );
+    expect(
+      loadHarnessLimits({ LLM_PROVIDER: "groq", LLM_BASE_URL: "http://127.0.0.1:1" })
+        .maxContextChars,
+    ).toBe(DEFAULT_LIMITS.maxContextChars);
+    expect(loadHarnessLimits({ AGENT_MAX_CONTEXT_CHARS: "5000" }).maxContextChars).toBe(5000);
   });
 });

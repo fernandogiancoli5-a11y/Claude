@@ -9,6 +9,7 @@ import {
   ProviderError,
   estimateCostUsd,
 } from "./provider.js";
+import { buildRequestMessages } from "./context.js";
 import {
   type ProjectSettings,
   Sandbox,
@@ -30,7 +31,7 @@ export interface HarnessLimits {
   /** Estimated spend cap for the session; null = no cap (only when pricing is unknown). */
   maxCostUsdPerSession: number | null;
   commandTimeoutMs: number;
-  /** Rough context budget; oldest tool outputs are elided beyond it. */
+  /** Request budget in characters of JSON; see buildRequestMessages. */
   maxContextChars: number;
 }
 
@@ -247,14 +248,23 @@ export class HarnessAdapter implements AgentAdapter {
           });
         }
 
-        compactContext(state.messages, limits.maxContextChars);
+        const request = buildRequestMessages(state.messages, limits.maxContextChars);
         let completion;
         try {
-          completion = await this.client.complete(state.messages, tools, controller.signal, (r) =>
-            ctx.emit("system.notice", {
-              level: "warn",
-              message: `${r.reason}; retry ${r.attempt} in ${r.waitSec}s (counts toward the model-call cap)`,
-            }),
+          completion = await this.client.complete(
+            request,
+            tools,
+            controller.signal,
+            (r) =>
+              ctx.emit("system.notice", {
+                level: "warn",
+                message: `${r.reason}; retry ${r.attempt} in ${r.waitSec}s (counts toward the model-call cap)`,
+              }),
+            (p) =>
+              ctx.emit("system.notice", {
+                level: "info",
+                message: `Waiting ${p.waitSec}s for ${cfg.provider}'s per-minute token budget (~${p.estimatedTokens} needed, ${p.remainingTokens} left); no model call used`,
+              }),
           );
         } catch (err) {
           const e = err instanceof ProviderError ? err : new ProviderError("server", String(err));
@@ -518,18 +528,5 @@ function repairDanglingToolCalls(messages: ChatMessage[]) {
         content: "Result lost: the worker restarted before this tool call completed.",
       })),
     );
-  }
-}
-
-/** Keep the request under budget by eliding the oldest tool outputs first. */
-export function compactContext(messages: ChatMessage[], maxChars: number) {
-  const size = () =>
-    messages.reduce((n, m) => n + ("content" in m && m.content ? m.content.length : 0) + 200, 0);
-  for (let i = 0; i < messages.length && size() > maxChars; i++) {
-    const m = messages[i]!;
-    if (m.role === "tool" && m.content.length > 300) {
-      m.content =
-        m.content.slice(0, 200) + "\n[older tool output elided to fit the context window]";
-    }
   }
 }

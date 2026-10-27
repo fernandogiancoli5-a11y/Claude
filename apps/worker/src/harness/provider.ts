@@ -124,17 +124,69 @@ export interface ModelClient {
     tools: ToolSchema[],
     signal: AbortSignal,
     onRetry?: (info: { attempt: number; reason: string; waitSec: number }) => void,
+    onPace?: (info: { waitSec: number; estimatedTokens: number; remainingTokens: number }) => void,
   ): Promise<{ result: CompletionResult; calls: number }>;
 }
 
+/** Characters per token used to estimate a request before sending it (deliberately low). */
+const CHARS_PER_TOKEN = 3.5;
+/** A per-minute token window never needs a longer wait than this. */
+const MAX_PACE_WAIT_MS = 60_000;
+
+/** Parses rate-limit reset durations such as "7.66s", "450ms" or "1m2.5s" into milliseconds. */
+export function parseResetMs(v: string | null): number | null {
+  if (!v) return null;
+  const m = /^(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?(?:(\d+(?:\.\d+)?)ms)?$/.exec(
+    v.trim(),
+  );
+  if (!m || (!m[1] && !m[2] && !m[3])) return null;
+  return Number(m[1] ?? 0) * 60_000 + Number(m[2] ?? 0) * 1000 + Number(m[3] ?? 0);
+}
+
+export function estimateRequestTokens(messages: ChatMessage[], tools: ToolSchema[]) {
+  return Math.ceil(JSON.stringify({ messages, tools }).length / CHARS_PER_TOKEN);
+}
+
 export class OpenAICompatibleClient implements ModelClient {
+  /** Token budget the provider last reported (x-ratelimit-* headers), if it reports one. */
+  private tokenBudget: { remaining: number; resetAt: number } | null = null;
+
   constructor(readonly config: ProviderConfig) {}
+
+  /**
+   * Waiting for the provider's per-minute token budget to refill before sending costs
+   * nothing; sending and getting a 429 costs a counted model call and a retry.
+   */
+  private async pace(
+    messages: ChatMessage[],
+    tools: ToolSchema[],
+    signal: AbortSignal,
+    onPace?: (info: { waitSec: number; estimatedTokens: number; remainingTokens: number }) => void,
+  ) {
+    const b = this.tokenBudget;
+    if (!b) return;
+    const estimatedTokens = estimateRequestTokens(messages, tools);
+    const waitMs = Math.min(b.resetAt - Date.now(), MAX_PACE_WAIT_MS);
+    if (estimatedTokens <= b.remaining || waitMs <= 0) return;
+    onPace?.({ waitSec: Math.ceil(waitMs / 1000), estimatedTokens, remainingTokens: b.remaining });
+    await sleep(waitMs, signal);
+  }
+
+  private recordBudget(headers: Headers) {
+    const remaining = Number(headers.get("x-ratelimit-remaining-tokens") ?? NaN);
+    const resetMs = parseResetMs(headers.get("x-ratelimit-reset-tokens"));
+    this.tokenBudget =
+      Number.isFinite(remaining) && resetMs !== null
+        ? { remaining, resetAt: Date.now() + resetMs }
+        : null;
+  }
 
   async complete(
     messages: ChatMessage[],
     tools: ToolSchema[],
     signal: AbortSignal,
     onRetry?: (info: { attempt: number; reason: string; waitSec: number }) => void,
+    onPace?: (info: { waitSec: number; estimatedTokens: number; remainingTokens: number }) => void,
   ) {
     if (!this.config.apiKey) {
       throw new ProviderError(
@@ -144,6 +196,11 @@ export class OpenAICompatibleClient implements ModelClient {
     }
     let calls = 0;
     for (let attempt = 0; ; attempt++) {
+      try {
+        await this.pace(messages, tools, signal, onPace);
+      } catch (err) {
+        throw withCalls(err as ProviderError, calls);
+      }
       calls++;
       try {
         return { result: await this.once(messages, tools, signal), calls };
@@ -206,6 +263,7 @@ export class OpenAICompatibleClient implements ModelClient {
       );
     }
     const text = await res.text().catch(() => "");
+    this.recordBudget(res.headers);
     if (!res.ok)
       throw classifyHttpError(this.config, res.status, text, res.headers.get("retry-after"));
     let data: any;
@@ -259,7 +317,9 @@ export function classifyHttpError(
     return new ProviderError("auth", `${p} denied access (403): ${message}`, status);
   if (status === 429) {
     // OpenAI signals exhausted credit with 429 + insufficient_quota; that must not be retried.
-    if (/insufficient_quota|billing|quota/i.test(code + message)) {
+    // Match the code or the quota wording only: Groq's per-minute limit message links to
+    // ".../settings/billing", which is a transient rate limit, not exhausted credit.
+    if (/insufficient_quota/i.test(code) || /exceeded your current quota/i.test(message)) {
       return new ProviderError(
         "quota_or_billing",
         `${p} quota or billing limit reached: ${message}`,

@@ -215,6 +215,27 @@ describe("harness: provider failures are explicit and not retried in loops", () 
     expect(t.result().modelCallsSession).toBe(2);
   });
 
+  it("waits for the reported per-minute token budget instead of spending a 429 retry", async () => {
+    const budget = { "x-ratelimit-remaining-tokens": "10", "x-ratelimit-reset-tokens": "600ms" };
+    const t = await setup(({ n }) =>
+      n === 1 ? { ...toolCalls({ name: "list_files", args: {} }), headers: budget } : text("done"),
+    );
+    const start = Date.now();
+    t.run.send("hi");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    expect(t.turns[0]!.isError).toBe(false);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(500);
+    expect(t.stub.requests).toHaveLength(2);
+    expect(t.result().modelCallsSession).toBe(2);
+    expect(
+      t.events.some(
+        (e) =>
+          e.type === "system.notice" &&
+          /per-minute token budget.*no model call used/.test(e.payload.message),
+      ),
+    ).toBe(true);
+  });
+
   it("429 with a long retry-after fails immediately; repeated 429s stop after the retry cap", async () => {
     const long = await setup(() =>
       error(429, "tpm exceeded", "rate_limit_exceeded", { "retry-after": "600" }),
@@ -361,6 +382,26 @@ describe("harness: limits, cancellation and recovery", () => {
     expect(t.turns[0]!.subtype).toBe("interrupted");
     const out = t.events.find((e) => e.type === "agent.tool_result");
     expect(out!.payload.output).toMatch(/CANCELLED/);
+  });
+
+  it("sends earlier turns' tool output as stubs while the saved transcript keeps it", async () => {
+    const t = await setup(({ n }) => {
+      if (n === 1) return toolCalls({ name: "read_file", args: { path: "src/cart.js" } });
+      return text(`summary ${n}`);
+    });
+    t.run.send("turn one");
+    await until(() => t.turns.length === 1, 10000, "turn 1");
+    t.run.send("turn two");
+    await until(() => t.turns.length === 2, 10000, "turn 2");
+    const toolMsg = (msgs: any[]) => msgs.find((m) => m.role === "tool").content as string;
+    expect(toolMsg(t.stub.requests[1]!.body.messages)).toMatch(/subtotalCents/);
+    expect(toolMsg(t.stub.requests[2]!.body.messages)).toMatch(
+      /output from an earlier turn omitted/,
+    );
+    const transcript = JSON.parse(
+      readFileSync(join(t.stateDir, "transcripts", "ses_test.json"), "utf8"),
+    );
+    expect(toolMsg(transcript.messages)).toMatch(/subtotalCents/);
   });
 
   it("persists the transcript and resumes after a simulated worker crash", async () => {
