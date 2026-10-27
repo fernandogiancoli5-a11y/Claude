@@ -1175,8 +1175,12 @@ export class Core {
   }
 
   refreshChanges(userId: string, sessionId: string) {
-    this.requireSession(userId, sessionId, "collaborator");
-    this.enqueueCommand(sessionId, { kind: "refresh_changes" });
+    const { session } = this.requireSession(userId, sessionId, "collaborator");
+    this.enqueueCommand(sessionId, {
+      kind: "refresh_changes",
+      branchName: session.branch_name,
+      baseBranch: session.base_branch,
+    });
   }
 
   // -------------------------------------------------------------- reviews
@@ -1247,7 +1251,7 @@ export class Core {
 
   requestMerge(userId: string, changeSetId: string, opts: { confirmSimulated?: boolean } = {}) {
     const c = this.changeSetRow(changeSetId);
-    this.requireSession(userId, c.session_id, "owner");
+    const { session } = this.requireSession(userId, c.session_id, "owner");
     if (c.status !== "open") throw new HttpError(409, `Change set is ${c.status}`);
     const latest = this.latestChangeSet(c.session_id);
     if (latest?.id !== c.id) throw new HttpError(409, "A newer change set exists");
@@ -1274,6 +1278,8 @@ export class Core {
     this.enqueueCommand(c.session_id, {
       kind: "merge",
       changeSetId,
+      branchName: session.branch_name,
+      baseBranch: session.base_branch,
       expectedHeadCommit: c.head_commit,
       approvedBy: user.display_name,
     });

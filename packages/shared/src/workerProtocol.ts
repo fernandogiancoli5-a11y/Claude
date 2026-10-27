@@ -84,6 +84,8 @@ export const PermissionDecisionCommand = z.object({
 export const MergeCommand = z.object({
   kind: z.literal("merge"),
   changeSetId: z.string(),
+  branchName: z.string(),
+  baseBranch: z.string(),
   expectedHeadCommit: z.string(),
   approvedBy: z.string(),
 });
@@ -94,7 +96,7 @@ export const SessionCommand = z.discriminatedUnion("kind", [
   PermissionDecisionCommand,
   z.object({ kind: z.literal("interrupt") }),
   z.object({ kind: z.literal("stop") }),
-  z.object({ kind: z.literal("refresh_changes") }),
+  z.object({ kind: z.literal("refresh_changes"), branchName: z.string(), baseBranch: z.string() }),
   MergeCommand,
 ]);
 export type SessionCommand = z.infer<typeof SessionCommand>;
