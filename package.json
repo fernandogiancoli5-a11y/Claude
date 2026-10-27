@@ -18,7 +18,7 @@
     "dev:worker": "npm run dev -w @pairloom/worker",
     "build": "npm run build -w @pairloom/web && npm run build -w @pairloom/site",
     "start": "npm run start -w @pairloom/server",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p netlify/tsconfig.json",
     "test": "vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -29,7 +29,8 @@
     "smoke:agent": "npm run build && node scripts/agent-scenario.mjs",
     "dev:site": "npm run dev -w @pairloom/site",
     "smoke:site": "npm run build && node scripts/site-smoke.mjs",
-    "waitlist:export": "node scripts/waitlist-export.mjs"
+    "waitlist:export": "node scripts/waitlist-export.mjs",
+    "test:sql": "bash scripts/test-supabase-sql.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

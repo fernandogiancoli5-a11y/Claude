@@ -89,6 +89,9 @@ npm run waitlist:export     # CSV of signups from data/pairloom.sqlite (server-s
 node scripts/site-screenshots.mjs   # re-capture the product screenshots (simulator, no model calls)
 ```
 
+For a $0 deployment of just the site and waitlist (Netlify + Supabase), see
+`docs/DEPLOY_FREE.md`. The site's "Sign in" link only appears when `PAIRLOOM_APP_URL` is set.
+
 To serve it, build with `PAIRLOOM_CONTACT_EMAIL=you@yourdomain npm run build` and set
 `SITE_DIST_DIR=./apps/site/dist` next to `WEB_DIST_DIR`: the site is then served at `/`, the app at
 `/app/`, and invite links (`/invite/<token>`) redirect into the app.
