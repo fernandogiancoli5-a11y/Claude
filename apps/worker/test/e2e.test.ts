@@ -204,7 +204,8 @@ for (const mode of ["simulated", "real-sdk"] as const) {
         expect(texts.every((e: any) => e.payload.text.includes("SIMULATED"))).toBe(true);
       }
 
-      // Review then merge the latest change set.
+      // Review then merge the latest change set, once the turn's checkpoint is final (idle).
+      await until(async () => (await detail()).session.status === "idle", 15000, "idle to review");
       const latest = (await detail()).changeSet;
       expect(
         (await owner.req("POST", `/api/changesets/${latest.id}/merge`, { confirmSimulated: true }))

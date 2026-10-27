@@ -23,6 +23,8 @@ interface LiveSession {
   baseCommit: string;
   branchName: string;
   turns: number;
+  /** True between onTurnStart and onTurnEnd. */
+  inTurn: boolean;
   stopping: boolean;
   lastEmittedHead: string | null;
   pending: Map<string, (a: PermissionAnswer) => void>;
@@ -222,6 +224,7 @@ export class SessionManager {
       baseCommit: wt.baseCommit,
       branchName: cmd.branchName,
       turns: 0,
+      inTurn: false,
       stopping: false,
       lastEmittedHead: null,
       pending: new Map(),
@@ -246,17 +249,24 @@ export class SessionManager {
           s.providerSessionId = id;
         },
         onTurnStart: () => {
+          s.inTurn = true;
           if (!s.stopping) this.setStatus(s, s.pending.size ? "awaiting_approval" : "running");
         },
         onTurnEnd: () => {
           s.turns += 1;
-          if (!s.stopping) this.setStatus(s, "idle");
-          void this.snapshot(s, false).catch((err) =>
-            this.emit(sessionId, "system.notice", {
-              level: "error",
-              message: `Could not snapshot changes: ${(err as Error).message}`,
-            }),
-          );
+          s.inTurn = false;
+          // Checkpoint before announcing idle: "idle" tells reviewers the change set is final,
+          // and approving one that is about to be superseded is rejected by the server.
+          void this.snapshot(s, false)
+            .catch((err) =>
+              this.emit(sessionId, "system.notice", {
+                level: "error",
+                message: `Could not snapshot changes: ${(err as Error).message}`,
+              }),
+            )
+            .finally(() => {
+              if (!s.stopping && !s.inTurn) this.setStatus(s, "idle");
+            });
         },
         onExit: ({ error }) => this.onExit(s, error),
       });

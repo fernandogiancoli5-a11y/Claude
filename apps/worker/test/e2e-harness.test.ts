@@ -212,11 +212,10 @@ describe("two-person real-harness session (MOCKED provider)", () => {
     expect(ins.body.status).toBe("pending_approval");
     await owner.req("POST", `/api/instructions/${ins.body.id}/decision`, { approve: true });
     await until(async () => (await results()).length >= 2, 30000, "turn 2");
-    await until(
-      async () => (await detail()).changeSet?.diff.includes("SAVE20"),
-      15000,
-      "turn 2 changes",
-    );
+    // "idle" is only announced once the turn's checkpoint is recorded, so a reviewer who
+    // sees idle is looking at the final change set, never one about to be superseded.
+    await until(async () => (await detail()).session.status === "idle", 15000, "idle turn 2");
+    expect((await detail()).changeSet.diff).toContain("SAVE20");
 
     // Reviewers run the project's tests themselves, independent of the agent's claims.
     expect((await collab.req("POST", `/api/sessions/${sessionId}/checks`)).status).toBe(200);
@@ -273,7 +272,8 @@ describe("two-person real-harness session (MOCKED provider)", () => {
     expect(JSON.stringify(lastRequest)).toContain("worker restarted");
     expect(JSON.stringify(lastRequest)).toContain("Implemented applyDiscount"); // earlier history survived
 
-    // Review and merge the checked change.
+    // Review and merge the checked change, once the turn's checkpoint is final (idle).
+    await until(async () => (await detail()).session.status === "idle", 15000, "idle to review");
     const cs = (await detail()).changeSet;
     await collab.req("POST", `/api/changesets/${cs.id}/reviews`, {
       decision: "approve",
