@@ -115,7 +115,11 @@ export class Hub implements Notifier {
       if (c.userId !== userId) continue;
       for (const [sid, ws] of c.sessions) if (ws === workspaceId) c.sessions.delete(sid);
       for (const [pid, ws] of c.projects) if (ws === workspaceId) c.projects.delete(pid);
-      this.send(c, { t: "error", message: "Your access to a workspace was removed", code: "revoked" });
+      this.send(c, {
+        t: "error",
+        message: "Your access to a workspace was removed",
+        code: "revoked",
+      });
     }
   }
 
@@ -143,7 +147,9 @@ export class Hub implements Notifier {
       try {
         msg = WorkerToServer.parse(JSON.parse(raw.toString()));
       } catch (err) {
-        socket.send(JSON.stringify({ t: "error", message: `Malformed frame: ${String(err).slice(0, 300)}` }));
+        socket.send(
+          JSON.stringify({ t: "error", message: `Malformed frame: ${String(err).slice(0, 300)}` }),
+        );
         return;
       }
       try {

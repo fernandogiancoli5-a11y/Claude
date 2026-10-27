@@ -5,7 +5,9 @@ import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 
 // Loaded via require so bundler-based tooling (Vite/Vitest) does not try to resolve
 // the comparatively new `node:sqlite` builtin as a package.
-const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+const { DatabaseSync } = createRequire(import.meta.url)(
+  "node:sqlite",
+) as typeof import("node:sqlite");
 
 /**
  * SQLite via Node's built-in driver: zero native dependencies, one file, good
@@ -193,8 +195,7 @@ export function openDb(path: string): Db {
 function migrate(db: Db) {
   db.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)");
   const row = db.prepare("SELECT version FROM schema_version").get() as
-    | { version: number }
-    | undefined;
+    { version: number } | undefined;
   let version = row?.version ?? 0;
   if (!row) db.prepare("INSERT INTO schema_version (version) VALUES (0)").run();
   while (version < MIGRATIONS.length) {

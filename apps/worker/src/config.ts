@@ -1,4 +1,9 @@
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Relative paths in config are relative to the repository root, whatever the cwd. */
+const REPO_ROOT = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+const fromRoot = (p: string) => resolve(REPO_ROOT, p);
 
 export interface WorkerConfig {
   serverUrl: string;
@@ -20,12 +25,12 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
     if (!v) throw new Error(`${key} is required`);
     return v;
   };
-  const stateDir = resolve(env.PAIRLOOM_STATE_DIR ?? "./data/worker-state");
+  const stateDir = fromRoot(env.PAIRLOOM_STATE_DIR ?? "./data/worker-state");
   return {
     serverUrl: required("PAIRLOOM_SERVER_URL"),
     token: required("PAIRLOOM_WORKER_TOKEN"),
-    repoPath: resolve(required("PAIRLOOM_REPO_PATH")),
-    worktreesDir: resolve(env.PAIRLOOM_WORKTREES_DIR ?? "./data/worktrees"),
+    repoPath: fromRoot(required("PAIRLOOM_REPO_PATH")),
+    worktreesDir: fromRoot(env.PAIRLOOM_WORKTREES_DIR ?? "./data/worktrees"),
     stateDir,
     maxTurns: Number(env.CLAUDE_MAX_TURNS ?? 50),
     maxBudgetUsd: env.CLAUDE_MAX_BUDGET_USD ? Number(env.CLAUDE_MAX_BUDGET_USD) : undefined,

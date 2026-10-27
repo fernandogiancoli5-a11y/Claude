@@ -32,7 +32,9 @@ function recorder(cwd: string, answer: (a: PermissionAsk) => "allow" | "deny" = 
     emit: (type, payload) => events.push({ type, payload }),
     requestPermission: async (a) => {
       asks.push(a);
-      return answer(a) === "allow" ? { behavior: "allow" } : { behavior: "deny", message: "denied in test" };
+      return answer(a) === "allow"
+        ? { behavior: "allow" }
+        : { behavior: "deny", message: "denied in test" };
     },
     onProviderSession: () => {},
     onTurnStart: () => {},
@@ -73,14 +75,19 @@ describe("ClaudeSdkAdapter (real SDK + CLI, stubbed model endpoint)", () => {
     const init = rec.events.find((e) => e.type === "agent.init");
     expect(init?.payload.providerSessionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(init?.payload.apiKeySource).toBe("ANTHROPIC_API_KEY");
-    expect(rec.events.some((e) => e.type === "agent.text" && e.payload.text.includes("STUB-REPLY"))).toBe(true);
+    expect(
+      rec.events.some((e) => e.type === "agent.text" && e.payload.text.includes("STUB-REPLY")),
+    ).toBe(true);
     expect(rec.turns[0]).toEqual({ subtype: "success", isError: false });
     await run.stop();
   }, 90000);
 
   it("routes tool calls to the host for approval and only runs them when allowed", async () => {
     const stub = await startStubAnthropic({
-      toolCall: { name: "Bash", input: { command: "touch created-by-agent.txt", description: "create file" } },
+      toolCall: {
+        name: "Bash",
+        input: { command: "touch created-by-agent.txt", description: "create file" },
+      },
     });
     stubs.push(stub);
     isolateModelEnv(stub.url);
@@ -90,14 +97,19 @@ describe("ClaudeSdkAdapter (real SDK + CLI, stubbed model endpoint)", () => {
     run.send("Create a file");
     await until(() => rec.turns.length > 0, 60000, "turn end");
     expect(rec.asks.map((a) => a.toolName)).toContain("Bash");
-    expect(rec.events.some((e) => e.type === "agent.tool_use" && e.payload.toolName === "Bash")).toBe(true);
+    expect(
+      rec.events.some((e) => e.type === "agent.tool_use" && e.payload.toolName === "Bash"),
+    ).toBe(true);
     expect(existsSync(join(r.repo, "created-by-agent.txt"))).toBe(true);
     await run.stop();
   }, 90000);
 
   it("a denied tool call does not run", async () => {
     const stub = await startStubAnthropic({
-      toolCall: { name: "Bash", input: { command: "touch should-not-exist.txt", description: "create file" } },
+      toolCall: {
+        name: "Bash",
+        input: { command: "touch should-not-exist.txt", description: "create file" },
+      },
     });
     stubs.push(stub);
     isolateModelEnv(stub.url);
@@ -127,7 +139,9 @@ describe("ClaudeSdkAdapter (real SDK + CLI, stubbed model endpoint)", () => {
       "credential error",
     );
     expect(err.payload.message).toMatch(/credential rejected.*401/);
-    expect(rec.events.some((e) => e.type === "system.notice" && /401/.test(e.payload.message))).toBe(true);
+    expect(
+      rec.events.some((e) => e.type === "system.notice" && /401/.test(e.payload.message)),
+    ).toBe(true);
     // Retries were cut short rather than running the full backoff schedule.
     await until(() => rec.turns.length > 0 || rec.getExit(), 15000, "turn end after interrupt");
     expect(rec.turns.find((t) => t.subtype === "success" && !t.isError)).toBeUndefined();

@@ -19,7 +19,12 @@ export async function git(cwd: string, args: string[], opts: { allowFail?: boole
   } catch (err) {
     if (opts.allowFail) {
       const e = err as { stdout?: string; stderr?: string; code?: number };
-      return { ok: false, stdout: (e.stdout ?? "").trimEnd(), stderr: e.stderr ?? "", code: e.code };
+      return {
+        ok: false,
+        stdout: (e.stdout ?? "").trimEnd(),
+        stderr: e.stderr ?? "",
+        code: e.code,
+      };
     }
     const e = err as { stderr?: string; message: string };
     throw new Error(`git ${args[0]} failed: ${(e.stderr || e.message).trim().slice(0, 1000)}`);
@@ -70,7 +75,9 @@ export class Workspace {
     assertSafeRef(baseBranch);
     const path = this.pathFor(sessionId);
     mkdirSync(this.worktreesDir, { recursive: true });
-    const baseCommit = (await git(this.repoPath, ["rev-parse", "--verify", `${baseBranch}^{commit}`])).stdout;
+    const baseCommit = (
+      await git(this.repoPath, ["rev-parse", "--verify", `${baseBranch}^{commit}`])
+    ).stdout;
     if (existsSync(path)) {
       const head = await git(path, ["rev-parse", "--abbrev-ref", "HEAD"], { allowFail: true });
       if (head.ok && head.stdout === branchName) {
@@ -79,9 +86,13 @@ export class Workspace {
       }
       throw new Error(`Worktree path exists but is not on ${branchName}: ${path}`);
     }
-    const branchExists = await git(this.repoPath, ["rev-parse", "--verify", `refs/heads/${branchName}`], {
-      allowFail: true,
-    });
+    const branchExists = await git(
+      this.repoPath,
+      ["rev-parse", "--verify", `refs/heads/${branchName}`],
+      {
+        allowFail: true,
+      },
+    );
     if (branchExists.ok) {
       await git(this.repoPath, ["worktree", "add", path, branchName]);
     } else {
@@ -132,9 +143,12 @@ export class Workspace {
     assertSafeRef(baseBranch);
     const head = (await git(this.repoPath, ["rev-parse", `refs/heads/${branchName}`])).stdout;
     if (head !== expectedHead) {
-      throw new Error(`Branch moved since review (expected ${expectedHead.slice(0, 10)}, found ${head.slice(0, 10)})`);
+      throw new Error(
+        `Branch moved since review (expected ${expectedHead.slice(0, 10)}, found ${head.slice(0, 10)})`,
+      );
     }
-    const status = (await git(this.repoPath, ["status", "--porcelain", "--untracked-files=no"])).stdout;
+    const status = (await git(this.repoPath, ["status", "--porcelain", "--untracked-files=no"]))
+      .stdout;
     if (status) throw new Error("Worker repository has uncommitted changes; refusing to merge");
     await git(this.repoPath, ["checkout", "-q", baseBranch]);
     const merged = await git(
@@ -144,7 +158,9 @@ export class Workspace {
     );
     if (!merged.ok) {
       await git(this.repoPath, ["merge", "--abort"], { allowFail: true });
-      throw new Error(`Merge failed (conflicts?): ${(merged.stderr || merged.stdout).slice(0, 1000)}`);
+      throw new Error(
+        `Merge failed (conflicts?): ${(merged.stderr || merged.stdout).slice(0, 1000)}`,
+      );
     }
     return (await git(this.repoPath, ["rev-parse", "HEAD"])).stdout;
   }

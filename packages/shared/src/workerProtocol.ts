@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { AdapterInfo, ExecutionMode, PermissionPolicy, SessionEventType, SessionStatus } from "./domain.js";
+import {
+  AdapterInfo,
+  ExecutionMode,
+  PermissionPolicy,
+  SessionEventType,
+  SessionStatus,
+} from "./domain.js";
 
 /**
  * Worker <-> collaboration server protocol (WebSocket, JSON text frames).

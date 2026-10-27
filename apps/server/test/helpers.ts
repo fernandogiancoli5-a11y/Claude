@@ -65,14 +65,32 @@ export async function seed(app: App) {
   const owner = await signup(app, "owner");
   const ws = (await owner.req("POST", "/api/workspaces", { name: "Rogue team" })).body;
   const project = (
-    await owner.req("POST", `/api/workspaces/${ws.id}/projects`, { name: "Rogue", defaultBranch: "main" })
+    await owner.req("POST", `/api/workspaces/${ws.id}/projects`, {
+      name: "Rogue",
+      defaultBranch: "main",
+    })
   ).body;
-  const worker = (await owner.req("POST", `/api/projects/${project.id}/workers`, { name: "laptop" })).body;
-  return { owner, workspaceId: ws.id as string, projectId: project.id as string, workerId: worker.worker.id as string, workerToken: worker.token as string };
+  const worker = (
+    await owner.req("POST", `/api/projects/${project.id}/workers`, { name: "laptop" })
+  ).body;
+  return {
+    owner,
+    workspaceId: ws.id as string,
+    projectId: project.id as string,
+    workerId: worker.worker.id as string,
+    workerToken: worker.token as string,
+  };
 }
 
-export async function invite(app: App, owner: Client, workspaceId: string, role: string, who?: string) {
-  const inv = (await owner.req("POST", `/api/workspaces/${workspaceId}/invitations`, { role })).body;
+export async function invite(
+  app: App,
+  owner: Client,
+  workspaceId: string,
+  role: string,
+  who?: string,
+) {
+  const inv = (await owner.req("POST", `/api/workspaces/${workspaceId}/invitations`, { role }))
+    .body;
   const member = await signup(app, who);
   const accepted = await member.req("POST", `/api/invitations/${inv.token}/accept`);
   if (accepted.status !== 200) throw new Error(`accept failed ${JSON.stringify(accepted.body)}`);

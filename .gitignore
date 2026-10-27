@@ -4,6 +4,7 @@ data/
 .env
 .env.*
 !.env.example
+!.env.worker.example
 *.sqlite
 *.sqlite-*
 coverage/

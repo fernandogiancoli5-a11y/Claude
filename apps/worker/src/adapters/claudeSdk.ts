@@ -108,7 +108,9 @@ export class ClaudeSdkAdapter implements AgentAdapter {
 
   async start(ctx: AgentContext): Promise<AgentRun> {
     if (!detectModelCredential()) {
-      throw new Error("Real agent unavailable: no ANTHROPIC_API_KEY / Bedrock / Vertex credential on worker");
+      throw new Error(
+        "Real agent unavailable: no ANTHROPIC_API_KEY / Bedrock / Vertex credential on worker",
+      );
     }
     const input = new InputQueue();
     const abort = new AbortController();
@@ -130,7 +132,8 @@ export class ClaudeSdkAdapter implements AgentAdapter {
     const options: Options = {
       cwd: ctx.cwd,
       abortController: abort,
-      permissionMode: ctx.permissionPolicy === "accept_edits_in_worktree" ? "acceptEdits" : "default",
+      permissionMode:
+        ctx.permissionPolicy === "accept_edits_in_worktree" ? "acceptEdits" : "default",
       canUseTool,
       disallowedTools: DENIED_TOOL_RULES,
       // Load the repository's CLAUDE.md / project settings, but not the worker host's user settings.

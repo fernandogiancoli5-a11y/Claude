@@ -63,7 +63,11 @@ export class SessionManager {
     this.link.emit(sessionId, type, payload);
   }
 
-  private setStatus(s: LiveSession, status: SessionStatus, extra: { error?: string; detail?: string } = {}) {
+  private setStatus(
+    s: LiveSession,
+    status: SessionStatus,
+    extra: { error?: string; detail?: string } = {},
+  ) {
     if (s.status === status && !extra.error) return;
     s.status = status;
     this.emit(s.id, "session.status", {
@@ -113,7 +117,10 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s?.run) {
           // Nothing live here; report the terminal state so the server can settle.
-          this.emit(sessionId, "session.status", { status: "stopped", detail: "No live agent on worker" });
+          this.emit(sessionId, "session.status", {
+            status: "stopped",
+            detail: "No live agent on worker",
+          });
           return;
         }
         s.stopping = true;
@@ -125,7 +132,11 @@ export class SessionManager {
       case "refresh_changes": {
         const s = this.sessions.get(sessionId);
         if (s) return this.snapshot(s, true);
-        const wt = await this.workspace.ensureWorktree(sessionId, command.branchName, command.baseBranch);
+        const wt = await this.workspace.ensureWorktree(
+          sessionId,
+          command.branchName,
+          command.baseBranch,
+        );
         const snap = await this.workspace.snapshot(
           wt.path,
           command.branchName,
@@ -138,7 +149,8 @@ export class SessionManager {
       }
       case "merge": {
         const s = this.sessions.get(sessionId);
-        if (s && s.status === "running") throw new Error("Agent is mid-turn; wait for it to finish");
+        if (s && s.status === "running")
+          throw new Error("Agent is mid-turn; wait for it to finish");
         try {
           const mergeCommit = await this.workspace.merge(
             command.branchName,
@@ -146,7 +158,10 @@ export class SessionManager {
             command.expectedHeadCommit,
             `Merge ${command.branchName} (Pairloom session ${sessionId}, approved by ${command.approvedBy})`,
           );
-          this.emit(sessionId, "merge.completed", { changeSetId: command.changeSetId, mergeCommit });
+          this.emit(sessionId, "merge.completed", {
+            changeSetId: command.changeSetId,
+            mergeCommit,
+          });
         } catch (err) {
           this.emit(sessionId, "merge.failed", {
             changeSetId: command.changeSetId,

@@ -20,7 +20,10 @@ export function makeRepo() {
   return { root, repo, worktrees: join(root, "worktrees"), state: join(root, "state"), g };
 }
 
-export function workerConfig(r: ReturnType<typeof makeRepo>, overrides: Partial<WorkerConfig> = {}): WorkerConfig {
+export function workerConfig(
+  r: ReturnType<typeof makeRepo>,
+  overrides: Partial<WorkerConfig> = {},
+): WorkerConfig {
   return {
     serverUrl: "",
     token: "",

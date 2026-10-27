@@ -30,7 +30,9 @@ manager = new SessionManager(link, workspace, adapters);
 
 for (const a of Object.values(adapters)) {
   const info = a.info();
-  console.log(`adapter ${info.kind}: ${info.available ? "available" : "UNAVAILABLE"} — ${info.detail}`);
+  console.log(
+    `adapter ${info.kind}: ${info.available ? "available" : "UNAVAILABLE"} — ${info.detail}`,
+  );
 }
 console.log(`repo ${config.repoPath}; worktrees in ${config.worktreesDir}`);
 link.start();

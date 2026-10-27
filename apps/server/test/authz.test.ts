@@ -9,7 +9,11 @@ afterEach(async () => {
   await app.close();
 });
 
-async function newSession(owner: Awaited<ReturnType<typeof signup>>, projectId: string, workerId: string) {
+async function newSession(
+  owner: Awaited<ReturnType<typeof signup>>,
+  projectId: string,
+  workerId: string,
+) {
   const res = await owner.req("POST", `/api/projects/${projectId}/sessions`, {
     title: "Fix bug",
     prompt: "Fix the inventory bug",
@@ -72,16 +76,26 @@ describe("workspace membership", () => {
     ]) {
       expect((await outsider.req("GET", url)).status).toBe(404);
     }
-    expect((await outsider.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "hi" })).status).toBe(404);
+    expect(
+      (await outsider.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "hi" }))
+        .status,
+    ).toBe(404);
     expect((await outsider.req("POST", `/api/sessions/${sessionId}/stop`)).status).toBe(404);
   });
 
   it("only owners can invite, create projects, register workers and start sessions", async () => {
     const { owner, workspaceId, projectId, workerId } = await seed(app);
     const collab = await invite(app, owner, workspaceId, "collaborator");
-    expect((await collab.req("POST", `/api/workspaces/${workspaceId}/invitations`, { role: "owner" })).status).toBe(403);
-    expect((await collab.req("POST", `/api/workspaces/${workspaceId}/projects`, { name: "x" })).status).toBe(403);
-    expect((await collab.req("POST", `/api/projects/${projectId}/workers`, { name: "x" })).status).toBe(403);
+    expect(
+      (await collab.req("POST", `/api/workspaces/${workspaceId}/invitations`, { role: "owner" }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await collab.req("POST", `/api/workspaces/${workspaceId}/projects`, { name: "x" })).status,
+    ).toBe(403);
+    expect(
+      (await collab.req("POST", `/api/projects/${projectId}/workers`, { name: "x" })).status,
+    ).toBe(403);
     const res = await collab.req("POST", `/api/projects/${projectId}/sessions`, {
       title: "t",
       prompt: "p",
@@ -93,7 +107,9 @@ describe("workspace membership", () => {
 
   it("invitations are single-use, revocable and expire", async () => {
     const { owner, workspaceId } = await seed(app);
-    const inv = (await owner.req("POST", `/api/workspaces/${workspaceId}/invitations`, { role: "viewer" })).body;
+    const inv = (
+      await owner.req("POST", `/api/workspaces/${workspaceId}/invitations`, { role: "viewer" })
+    ).body;
     const a = await signup(app);
     const b = await signup(app);
     expect((await a.req("POST", `/api/invitations/${inv.token}/accept`)).status).toBe(200);
@@ -104,7 +120,9 @@ describe("workspace membership", () => {
     expect((await b.req("POST", `/api/invitations/${inv2.token}/accept`)).status).toBe(404);
 
     const inv3 = (await owner.req("POST", `/api/workspaces/${workspaceId}/invitations`, {})).body;
-    app.db.prepare("UPDATE invitations SET expires_at = ? WHERE id = ?").run(new Date(0).toISOString(), inv3.id);
+    app.db
+      .prepare("UPDATE invitations SET expires_at = ? WHERE id = ?")
+      .run(new Date(0).toISOString(), inv3.id);
     expect((await b.req("POST", `/api/invitations/${inv3.token}/accept`)).status).toBe(410);
     expect((await b.req("GET", `/api/workspaces/${workspaceId}`)).status).toBe(404);
   });
@@ -113,7 +131,9 @@ describe("workspace membership", () => {
     const { owner, workspaceId, projectId } = await seed(app);
     const collab = await invite(app, owner, workspaceId, "collaborator");
     expect((await collab.req("GET", `/api/projects/${projectId}`)).status).toBe(200);
-    expect((await owner.req("DELETE", `/api/workspaces/${workspaceId}/members/${collab.userId}`)).status).toBe(200);
+    expect(
+      (await owner.req("DELETE", `/api/workspaces/${workspaceId}/members/${collab.userId}`)).status,
+    ).toBe(200);
     expect((await collab.req("GET", `/api/projects/${projectId}`)).status).toBe(404);
   });
 
@@ -131,9 +151,14 @@ describe("instructions and approvals", () => {
     const viewer = await invite(app, owner, workspaceId, "viewer");
     const collab = await invite(app, owner, workspaceId, "collaborator");
 
-    expect((await viewer.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "do x" })).status).toBe(403);
+    expect(
+      (await viewer.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "do x" }))
+        .status,
+    ).toBe(403);
 
-    const c = await collab.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "also add tests" });
+    const c = await collab.req("POST", `/api/sessions/${sessionId}/instructions`, {
+      text: "also add tests",
+    });
     expect(c.status).toBe(200);
     expect(c.body.status).toBe("pending_approval");
 
@@ -142,23 +167,41 @@ describe("instructions and approvals", () => {
       app.core.pendingCommands(workerId).filter((cmd) => cmd.command.kind === "message");
     expect(messageCommands()).toHaveLength(1); // the owner's initial prompt only
 
-    expect((await collab.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: true })).status).toBe(403);
-    expect((await viewer.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: true })).status).toBe(403);
-    expect((await owner.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: true })).status).toBe(200);
+    expect(
+      (await collab.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: true }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await viewer.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: true }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await owner.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: true }))
+        .status,
+    ).toBe(200);
     expect(messageCommands()).toHaveLength(2);
     // Deciding twice is rejected.
-    expect((await owner.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: false })).status).toBe(409);
+    expect(
+      (await owner.req("POST", `/api/instructions/${c.body.id}/decision`, { approve: false }))
+        .status,
+    ).toBe(409);
 
-    const o = await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "ship it" });
+    const o = await owner.req("POST", `/api/sessions/${sessionId}/instructions`, {
+      text: "ship it",
+    });
     expect(o.body.status).toBe("approved");
   });
 
   it("validates instruction length and emptiness", async () => {
     const { owner, projectId, workerId } = await seed(app);
     const sessionId = await newSession(owner, projectId, workerId);
-    expect((await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "   " })).status).toBe(400);
+    expect(
+      (await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "   " })).status,
+    ).toBe(400);
     const huge = "x".repeat(8001);
-    expect((await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: huge })).status).toBe(413);
+    expect(
+      (await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: huge })).status,
+    ).toBe(413);
   });
 
   it("rate-limits instruction floods", async () => {
@@ -166,7 +209,8 @@ describe("instructions and approvals", () => {
     const sessionId = await newSession(owner, projectId, workerId);
     let last = 200;
     for (let i = 0; i < 25; i++) {
-      last = (await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: `n${i}` })).status;
+      last = (await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: `n${i}` }))
+        .status;
     }
     expect(last).toBe(429);
   });
@@ -184,10 +228,18 @@ describe("instructions and approvals", () => {
     });
     const perm = (await owner.req("GET", `/api/sessions/${sessionId}`)).body.permissionRequests[0];
     expect(perm.status).toBe("pending");
-    expect((await collab.req("POST", `/api/permissions/${perm.id}/decision`, { allow: true })).status).toBe(403);
-    expect((await owner.req("POST", `/api/permissions/${perm.id}/decision`, { allow: true })).status).toBe(200);
-    expect((await owner.req("POST", `/api/permissions/${perm.id}/decision`, { allow: false })).status).toBe(409);
-    const decision = app.core.pendingCommands(workerId).find((c) => c.command.kind === "permission_decision");
+    expect(
+      (await collab.req("POST", `/api/permissions/${perm.id}/decision`, { allow: true })).status,
+    ).toBe(403);
+    expect(
+      (await owner.req("POST", `/api/permissions/${perm.id}/decision`, { allow: true })).status,
+    ).toBe(200);
+    expect(
+      (await owner.req("POST", `/api/permissions/${perm.id}/decision`, { allow: false })).status,
+    ).toBe(409);
+    const decision = app.core
+      .pendingCommands(workerId)
+      .find((c) => c.command.kind === "permission_decision");
     expect(decision?.command).toMatchObject({ requestId: "req-1", behavior: "allow" });
   });
 });
@@ -265,18 +317,43 @@ describe("review and merge gate", () => {
     const collab = await invite(app, owner, workspaceId, "collaborator");
     const viewer = await invite(app, owner, workspaceId, "viewer");
 
-    expect((await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true })).status).toBe(409);
-    expect((await viewer.req("POST", `/api/changesets/${cs.id}/reviews`, { decision: "approve" })).status).toBe(403);
-    expect((await collab.req("POST", `/api/changesets/${cs.id}/reviews`, { decision: "approve", body: "lgtm" })).status).toBe(200);
-    expect((await collab.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true })).status).toBe(403);
+    expect(
+      (await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true }))
+        .status,
+    ).toBe(409);
+    expect(
+      (await viewer.req("POST", `/api/changesets/${cs.id}/reviews`, { decision: "approve" }))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await collab.req("POST", `/api/changesets/${cs.id}/reviews`, {
+          decision: "approve",
+          body: "lgtm",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await collab.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true }))
+        .status,
+    ).toBe(403);
     const unconfirmed = await owner.req("POST", `/api/changesets/${cs.id}/merge`, {});
     expect(unconfirmed.status).toBe(409);
     expect(unconfirmed.body.code).toBe("confirm_simulated");
-    expect((await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true })).status).toBe(200);
+    expect(
+      (await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true }))
+        .status,
+    ).toBe(200);
     const merge = app.core.pendingCommands(workerId).find((c) => c.command.kind === "merge");
-    expect(merge?.command).toMatchObject({ changeSetId: cs.id, expectedHeadCommit: "b".repeat(40) });
+    expect(merge?.command).toMatchObject({
+      changeSetId: cs.id,
+      expectedHeadCommit: "b".repeat(40),
+    });
     // Not mergeable twice while merging.
-    expect((await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true })).status).toBe(409);
+    expect(
+      (await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true }))
+        .status,
+    ).toBe(409);
   });
 
   it("a later request-changes review from the same reviewer withdraws approval", async () => {
@@ -284,7 +361,13 @@ describe("review and merge gate", () => {
     const collab = await invite(app, owner, workspaceId, "collaborator");
     await collab.req("POST", `/api/changesets/${cs.id}/reviews`, { decision: "approve" });
     await new Promise((r) => setTimeout(r, 5));
-    await collab.req("POST", `/api/changesets/${cs.id}/reviews`, { decision: "request_changes", body: "wait" });
-    expect((await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true })).status).toBe(409);
+    await collab.req("POST", `/api/changesets/${cs.id}/reviews`, {
+      decision: "request_changes",
+      body: "wait",
+    });
+    expect(
+      (await owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true }))
+        .status,
+    ).toBe(409);
   });
 });

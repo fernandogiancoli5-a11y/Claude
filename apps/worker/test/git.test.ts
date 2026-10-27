@@ -12,16 +12,29 @@ describe("git workspace isolation", () => {
     expect(existsSync(wt.path)).toBe(true);
 
     writeFileSync(join(wt.path, "inventory.ts"), "export const max = 10;\n");
-    const snap = await ws.snapshot(wt.path, "pairloom/abc", wt.baseCommit, "checkpoint", 1024 * 1024);
+    const snap = await ws.snapshot(
+      wt.path,
+      "pairloom/abc",
+      wt.baseCommit,
+      "checkpoint",
+      1024 * 1024,
+    );
     expect(snap.files).toEqual([{ path: "inventory.ts", insertions: 1, deletions: 0 }]);
     expect(snap.diff).toContain("+export const max = 10;");
     // The base branch is untouched by the agent's work.
     expect(existsSync(join(r.repo, "inventory.ts"))).toBe(false);
 
     // A stale review cannot be merged.
-    await expect(ws.merge("pairloom/abc", "main", "0".repeat(40), "m")).rejects.toThrow(/moved since review/);
+    await expect(ws.merge("pairloom/abc", "main", "0".repeat(40), "m")).rejects.toThrow(
+      /moved since review/,
+    );
 
-    const mergeCommit = await ws.merge("pairloom/abc", "main", snap.headCommit, "Merge reviewed change");
+    const mergeCommit = await ws.merge(
+      "pairloom/abc",
+      "main",
+      snap.headCommit,
+      "Merge reviewed change",
+    );
     expect(mergeCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(existsSync(join(r.repo, "inventory.ts"))).toBe(true);
     // Never pushes: there is no remote at all, and merge still succeeded locally.
@@ -44,7 +57,9 @@ describe("git workspace isolation", () => {
     writeFileSync(join(wt.path, "a.txt"), "a\n");
     const snap = await ws.snapshot(wt.path, "pairloom/two", wt.baseCommit, "c", 1 << 20);
     writeFileSync(join(r.repo, "README.md"), "dirty\n");
-    await expect(ws.merge("pairloom/two", "main", snap.headCommit, "m")).rejects.toThrow(/uncommitted/);
+    await expect(ws.merge("pairloom/two", "main", snap.headCommit, "m")).rejects.toThrow(
+      /uncommitted/,
+    );
   });
 
   it("rejects unsafe refs and session ids", () => {

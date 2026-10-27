@@ -123,8 +123,7 @@ export class Core {
 
   getUser(id: string): UserRow | undefined {
     return this.db.prepare("SELECT id, email, display_name FROM users WHERE id = ?").get(id) as
-      | UserRow
-      | undefined;
+      UserRow | undefined;
   }
 
   // ----------------------------------------------------------- membership
@@ -304,7 +303,15 @@ export class Core {
         `INSERT INTO projects (id, workspace_id, name, repo_url, default_branch, created_by, created_at)
          VALUES (?,?,?,?,?,?,?)`,
       )
-      .run(id, workspaceId, input.name, input.repoUrl ?? null, input.defaultBranch, userId, nowIso());
+      .run(
+        id,
+        workspaceId,
+        input.name,
+        input.repoUrl ?? null,
+        input.defaultBranch,
+        userId,
+        nowIso(),
+      );
     return { id, ...input };
   }
 
@@ -340,7 +347,11 @@ export class Core {
   // -------------------------------------------------------------- workers
 
   /** Returns the plaintext token exactly once. */
-  createWorker(userId: string, projectId: string, input: { name: string; kind: "local" | "cloud" }) {
+  createWorker(
+    userId: string,
+    projectId: string,
+    input: { name: string; kind: "local" | "cloud" },
+  ) {
     const p = this.projectRow(projectId);
     this.requireRole(userId, p.workspace_id, "owner");
     const id = newId("wkr");
@@ -815,8 +826,7 @@ export class Core {
         "SELECT session_id, command_json, status FROM worker_commands WHERE id = ? AND worker_id = ?",
       )
       .get(commandId, workerId) as
-      | { session_id: string; command_json: string; status: string }
-      | undefined;
+      { session_id: string; command_json: string; status: string } | undefined;
     if (!row || row.status !== "pending") return; // unknown or duplicate ack
     const command = JSON.parse(row.command_json) as SessionCommand;
     if (!ok) {
@@ -841,7 +851,9 @@ export class Core {
       .run(nowIso(), commandId);
     if (command.kind === "message") {
       this.db
-        .prepare("UPDATE instructions SET status = 'delivered' WHERE id = ? AND status = 'approved'")
+        .prepare(
+          "UPDATE instructions SET status = 'delivered' WHERE id = ? AND status = 'approved'",
+        )
         .run(command.instructionId);
       this.appendEvent(row.session_id, {
         type: "instruction.delivered",
@@ -859,7 +871,8 @@ export class Core {
     const appended = this.appendEvent(s.id, {
       uid: ev.id,
       type: ev.type,
-      actorKind: ev.type.startsWith("agent.") ? "agent" : "worker",
+      actorKind:
+        ev.type.startsWith("agent.") || ev.type === "permission.requested" ? "agent" : "worker",
       payload,
     });
     if (!appended) return "duplicate";
@@ -898,10 +911,18 @@ export class Core {
     }
   }
 
-  private applyWorkerEvent(s: SessionRow, type: SessionEventType, payload: Record<string, unknown>) {
+  private applyWorkerEvent(
+    s: SessionRow,
+    type: SessionEventType,
+    payload: Record<string, unknown>,
+  ) {
     switch (type) {
       case "session.status": {
-        const p = payload as { status: SessionStatus; providerSessionId?: string | null; error?: string | null };
+        const p = payload as {
+          status: SessionStatus;
+          providerSessionId?: string | null;
+          error?: string | null;
+        };
         // A worker cannot revive a session the server already ended.
         const current = this.sessionRow(s.id).status;
         if (TERMINAL_STATUSES.includes(current)) return;
@@ -925,7 +946,12 @@ export class Core {
         return;
       }
       case "permission.requested": {
-        const p = payload as { requestId: string; toolName: string; input: unknown; title?: string };
+        const p = payload as {
+          requestId: string;
+          toolName: string;
+          input: unknown;
+          title?: string;
+        };
         this.db
           .prepare(
             `INSERT OR IGNORE INTO permission_requests (id, session_id, request_id, tool_name,
@@ -1047,8 +1073,7 @@ export class Core {
     const ins = this.db
       .prepare("SELECT session_id, author_id, text, status FROM instructions WHERE id = ?")
       .get(instructionId) as
-      | { session_id: string; author_id: string; text: string; status: string }
-      | undefined;
+      { session_id: string; author_id: string; text: string; status: string } | undefined;
     if (!ins) throw new HttpError(404, "Not found");
     const { session } = this.requireSession(userId, ins.session_id, "owner");
     if (ins.status !== "pending_approval") throw new HttpError(409, `Instruction is ${ins.status}`);
@@ -1069,7 +1094,12 @@ export class Core {
     if (approve) this.deliverInstruction(ins.session_id, instructionId, ins.author_id, ins.text);
   }
 
-  private deliverInstruction(sessionId: string, instructionId: string, authorId: string, text: string) {
+  private deliverInstruction(
+    sessionId: string,
+    instructionId: string,
+    authorId: string,
+    text: string,
+  ) {
     const authorName = this.getUser(authorId)?.display_name ?? "unknown";
     this.enqueueCommand(sessionId, { kind: "message", instructionId, authorName, text });
   }
@@ -1088,10 +1118,11 @@ export class Core {
 
   decidePermission(userId: string, permissionId: string, allow: boolean, message?: string) {
     const p = this.db
-      .prepare("SELECT session_id, request_id, tool_name, status FROM permission_requests WHERE id = ?")
+      .prepare(
+        "SELECT session_id, request_id, tool_name, status FROM permission_requests WHERE id = ?",
+      )
       .get(permissionId) as
-      | { session_id: string; request_id: string; tool_name: string; status: string }
-      | undefined;
+      { session_id: string; request_id: string; tool_name: string; status: string } | undefined;
     if (!p) throw new HttpError(404, "Not found");
     this.requireSession(userId, p.session_id, "owner");
     if (p.status !== "pending") throw new HttpError(409, `Request is ${p.status}`);
@@ -1105,7 +1136,11 @@ export class Core {
       type: "permission.decided",
       actorKind: "user",
       actorUserId: userId,
-      payload: { requestId: p.request_id, toolName: p.tool_name, behavior: allow ? "allow" : "deny" },
+      payload: {
+        requestId: p.request_id,
+        toolName: p.tool_name,
+        behavior: allow ? "allow" : "deny",
+      },
     });
     this.enqueueCommand(p.session_id, {
       kind: "permission_decision",
@@ -1143,7 +1178,9 @@ export class Core {
       this.systemStatus(
         sessionId,
         "stopping",
-        workerOnline ? "Stop requested" : "Stop requested; will be delivered when the worker reconnects",
+        workerOnline
+          ? "Stop requested"
+          : "Stop requested; will be delivered when the worker reconnects",
       );
     } else {
       this.cancelPendingCommands(sessionId, "Session stopped before it started");
@@ -1219,9 +1256,17 @@ export class Core {
 
   private changeSetRow(changeSetId: string) {
     const c = this.db
-      .prepare("SELECT id, session_id, head_commit, status, execution_mode FROM change_sets WHERE id = ?")
+      .prepare(
+        "SELECT id, session_id, head_commit, status, execution_mode FROM change_sets WHERE id = ?",
+      )
       .get(changeSetId) as
-      | { id: string; session_id: string; head_commit: string; status: string; execution_mode: ExecutionMode }
+      | {
+          id: string;
+          session_id: string;
+          head_commit: string;
+          status: string;
+          execution_mode: ExecutionMode;
+        }
       | undefined;
     if (!c) throw new HttpError(404, "Not found");
     return c;
@@ -1265,7 +1310,11 @@ export class Core {
       .get(changeSetId) as { n: number };
     if (approvals.n < 1) throw new HttpError(409, "Merge requires at least one approving review");
     if (c.execution_mode === "simulated" && !opts.confirmSimulated) {
-      throw new HttpError(409, "This change set came from a SIMULATED agent; confirm explicitly", "confirm_simulated");
+      throw new HttpError(
+        409,
+        "This change set came from a SIMULATED agent; confirm explicitly",
+        "confirm_simulated",
+      );
     }
     this.db.prepare("UPDATE change_sets SET status = 'merging' WHERE id = ?").run(changeSetId);
     const user = this.getUser(userId)!;

@@ -18,7 +18,8 @@ export class SimulatedAdapter implements AgentAdapter {
     return {
       kind: "simulated",
       available: true,
-      detail: "Scripted simulator: writes a notes file in the worktree; never calls a model or runs commands",
+      detail:
+        "Scripted simulator: writes a notes file in the worktree; never calls a model or runs commands",
     };
   }
 
@@ -47,7 +48,10 @@ export class SimulatedAdapter implements AgentAdapter {
 
       const ask = await ctx.requestPermission({
         toolName: "Bash",
-        input: { command: "echo simulated-check", description: "Simulated check (will NOT be executed)" },
+        input: {
+          command: "echo simulated-check",
+          description: "Simulated check (will NOT be executed)",
+        },
         title: `${BANNER} Simulated agent asks to run: echo simulated-check`,
       });
       if (interrupted || stopped) return finish("interrupted", true);
@@ -61,7 +65,11 @@ export class SimulatedAdapter implements AgentAdapter {
       });
 
       const rel = ".pairloom/simulated-notes.md";
-      ctx.emit("agent.tool_use", { toolUseId: `sim-w-${turn}`, toolName: "Write (simulated)", input: rel });
+      ctx.emit("agent.tool_use", {
+        toolUseId: `sim-w-${turn}`,
+        toolName: "Write (simulated)",
+        input: rel,
+      });
       mkdirSync(join(ctx.cwd, ".pairloom"), { recursive: true });
       appendFileSync(
         join(ctx.cwd, rel),

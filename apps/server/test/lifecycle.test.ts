@@ -47,7 +47,13 @@ describe("session lifecycle over the worker protocol", () => {
 
     w.send({ t: "command_ack", id: start.id, ok: true });
     w.send({ t: "command_ack", id: msg.id, ok: true });
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "session.status", payload: { status: "running" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "running" },
+    });
     await tick();
     const detail = (await owner.req("GET", `/api/sessions/${sessionId}`)).body;
     expect(detail.session.status).toBe("running");
@@ -76,7 +82,13 @@ describe("session lifecycle over the worker protocol", () => {
   it("marks live sessions disconnected on drop, and restores them if the worker reports them live", async () => {
     const { owner, sessionId, workerToken } = await startSession();
     let w = await connect(workerToken);
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "session.status", payload: { status: "idle" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "idle" },
+    });
     await tick();
     await w.close();
     await tick();
@@ -90,7 +102,13 @@ describe("session lifecycle over the worker protocol", () => {
   it("marks sessions interrupted (not stopped, not succeeded) when the worker returns without them", async () => {
     const { owner, sessionId, workerToken, workerId } = await startSession();
     let w = await connect(workerToken);
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "session.status", payload: { status: "running" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "running" },
+    });
     w.send({
       t: "event",
       id: randomUUID(),
@@ -125,23 +143,47 @@ describe("session lifecycle over the worker protocol", () => {
   it("stop on a live session goes through stopping, and a worker cannot revive a stopped session", async () => {
     const { owner, sessionId, workerToken } = await startSession();
     const w = await connect(workerToken);
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "session.status", payload: { status: "idle" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "idle" },
+    });
     await tick();
-    expect((await owner.req("POST", `/api/sessions/${sessionId}/stop`)).body.status).toBe("stopping");
+    expect((await owner.req("POST", `/api/sessions/${sessionId}/stop`)).body.status).toBe(
+      "stopping",
+    );
     await w.waitFor((f) => f.t === "command" && f.command.kind === "stop");
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "session.status", payload: { status: "stopped" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "stopped" },
+    });
     await tick();
     expect(await status(owner, sessionId)).toBe("stopped");
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "session.status", payload: { status: "running" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "running" },
+    });
     await tick();
     expect(await status(owner, sessionId)).toBe("stopped");
     // Instructions to a stopped session are refused.
-    expect((await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "more" })).status).toBe(409);
+    expect(
+      (await owner.req("POST", `/api/sessions/${sessionId}/instructions`, { text: "more" })).status,
+    ).toBe(409);
   });
 
   it("stop on a never-started session ends it directly and cancels queued commands", async () => {
     const { owner, sessionId, workerId } = await startSession();
-    expect((await owner.req("POST", `/api/sessions/${sessionId}/stop`)).body.status).toBe("stopped");
+    expect((await owner.req("POST", `/api/sessions/${sessionId}/stop`)).body.status).toBe(
+      "stopped",
+    );
     expect(app.core.pendingCommands(workerId)).toHaveLength(0);
   });
 
@@ -206,10 +248,18 @@ describe("browser realtime", () => {
     expect(replayA[0]).toBe(1);
     expect(replayB.every((s: number) => s > 2)).toBe(true);
 
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "agent.text", payload: { text: "working" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "agent.text",
+      payload: { text: "working" },
+    });
     await tick(100);
     for (const c of [a, b]) {
-      expect(c.frames.some((f) => f.t === "event" && f.event.payload.text === "working")).toBe(true);
+      expect(c.frames.some((f) => f.t === "event" && f.event.payload.text === "working")).toBe(
+        true,
+      );
     }
     a.s.close();
     b.s.close();
@@ -232,7 +282,13 @@ describe("browser realtime", () => {
 
     await owner.req("DELETE", `/api/workspaces/${workspaceId}/members/${collab.userId}`);
     const before = c.frames.length;
-    w.send({ t: "event", id: randomUUID(), sessionId, type: "agent.text", payload: { text: "secret" } });
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "agent.text",
+      payload: { text: "secret" },
+    });
     await tick(100);
     expect(c.frames.slice(before).some((f) => f.t === "event")).toBe(false);
     o.s.close();

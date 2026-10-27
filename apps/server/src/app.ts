@@ -30,7 +30,10 @@ const BranchName = z
   .regex(/^[A-Za-z0-9._\/-]+$/, "Invalid branch name")
   .refine((b) => !b.includes("..") && !b.startsWith("-"), "Invalid branch name");
 
-export async function buildApp(config: ServerConfig, db: Db = openDb(config.databasePath)): Promise<App> {
+export async function buildApp(
+  config: ServerConfig,
+  db: Db = openDb(config.databasePath),
+): Promise<App> {
   const fastify = Fastify({
     logger: process.env.NODE_ENV === "test" ? false : { level: process.env.LOG_LEVEL ?? "info" },
     bodyLimit: 1024 * 1024,
@@ -70,7 +73,10 @@ export async function buildApp(config: ServerConfig, db: Db = openDb(config.data
   const body = <T extends z.ZodTypeAny>(schema: T, req: FastifyRequest): z.infer<T> =>
     schema.parse(req.body ?? {});
   const param = (req: FastifyRequest, key: string) =>
-    z.string().max(64).parse((req.params as Record<string, unknown>)[key]);
+    z
+      .string()
+      .max(64)
+      .parse((req.params as Record<string, unknown>)[key]);
 
   // ------------------------------------------------------------- auth
 
@@ -117,14 +123,18 @@ export async function buildApp(config: ServerConfig, db: Db = openDb(config.data
 
   // -------------------------------------------------------- workspaces
 
-  fastify.get("/api/workspaces", async (req) => ({ workspaces: core.listWorkspaces(user(req).id) }));
+  fastify.get("/api/workspaces", async (req) => ({
+    workspaces: core.listWorkspaces(user(req).id),
+  }));
 
   fastify.post("/api/workspaces", async (req) => {
     const { name } = body(z.object({ name: Name }), req);
     return core.createWorkspace(user(req).id, name);
   });
 
-  fastify.get("/api/workspaces/:id", async (req) => core.getWorkspace(user(req).id, param(req, "id")));
+  fastify.get("/api/workspaces/:id", async (req) =>
+    core.getWorkspace(user(req).id, param(req, "id")),
+  );
 
   fastify.post("/api/workspaces/:id/invitations", async (req) => {
     const { role } = body(z.object({ role: Role.default("collaborator") }), req);
@@ -138,13 +148,21 @@ export async function buildApp(config: ServerConfig, db: Db = openDb(config.data
   });
 
   fastify.get("/api/invitations/:token", async (req) =>
-    core.previewInvitation(z.string().max(200).parse((req.params as { token: string }).token)),
+    core.previewInvitation(
+      z
+        .string()
+        .max(200)
+        .parse((req.params as { token: string }).token),
+    ),
   );
 
   fastify.post("/api/invitations/:token/accept", async (req) =>
     core.acceptInvitation(
       user(req).id,
-      z.string().max(200).parse((req.params as { token: string }).token),
+      z
+        .string()
+        .max(200)
+        .parse((req.params as { token: string }).token),
     ),
   );
 
@@ -170,11 +188,16 @@ export async function buildApp(config: ServerConfig, db: Db = openDb(config.data
   fastify.get("/api/projects/:id", async (req) => core.getProject(user(req).id, param(req, "id")));
 
   fastify.post("/api/projects/:id/workers", async (req) => {
-    const input = body(z.object({ name: Name, kind: z.enum(["local", "cloud"]).default("local") }), req);
+    const input = body(
+      z.object({ name: Name, kind: z.enum(["local", "cloud"]).default("local") }),
+      req,
+    );
     return core.createWorker(user(req).id, param(req, "id"), input);
   });
 
-  fastify.delete("/api/workers/:id", async (req) => core.revokeWorker(user(req).id, param(req, "id")));
+  fastify.delete("/api/workers/:id", async (req) =>
+    core.revokeWorker(user(req).id, param(req, "id")),
+  );
 
   // ---------------------------------------------------------- sessions
 
@@ -203,18 +226,27 @@ export async function buildApp(config: ServerConfig, db: Db = openDb(config.data
   });
 
   fastify.post("/api/sessions/:id/instructions", async (req) => {
-    const { text } = body(z.object({ text: z.string().max(LIMITS.instructionMaxChars + 1000) }), req);
+    const { text } = body(
+      z.object({ text: z.string().max(LIMITS.instructionMaxChars + 1000) }),
+      req,
+    );
     return core.submitInstruction(user(req).id, param(req, "id"), text);
   });
 
   fastify.post("/api/instructions/:id/decision", async (req) => {
-    const input = body(z.object({ approve: z.boolean(), note: z.string().max(1000).optional() }), req);
+    const input = body(
+      z.object({ approve: z.boolean(), note: z.string().max(1000).optional() }),
+      req,
+    );
     core.decideInstruction(user(req).id, param(req, "id"), input.approve, input.note);
     return { ok: true };
   });
 
   fastify.post("/api/permissions/:id/decision", async (req) => {
-    const input = body(z.object({ allow: z.boolean(), message: z.string().max(1000).optional() }), req);
+    const input = body(
+      z.object({ allow: z.boolean(), message: z.string().max(1000).optional() }),
+      req,
+    );
     core.decidePermission(user(req).id, param(req, "id"), input.allow, input.message);
     return { ok: true };
   });
@@ -224,7 +256,9 @@ export async function buildApp(config: ServerConfig, db: Db = openDb(config.data
     return { ok: true };
   });
 
-  fastify.post("/api/sessions/:id/stop", async (req) => core.stopSession(user(req).id, param(req, "id")));
+  fastify.post("/api/sessions/:id/stop", async (req) =>
+    core.stopSession(user(req).id, param(req, "id")),
+  );
 
   fastify.post("/api/sessions/:id/resume", async (req) =>
     core.resumeSession(user(req).id, param(req, "id")),

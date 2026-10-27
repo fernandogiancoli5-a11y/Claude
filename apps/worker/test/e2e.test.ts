@@ -27,7 +27,11 @@ afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c();
 });
 
-async function bootWorker(app: Awaited<ReturnType<typeof makeApp>>, token: string, repo: ReturnType<typeof makeRepo>) {
+async function bootWorker(
+  app: Awaited<ReturnType<typeof makeApp>>,
+  token: string,
+  repo: ReturnType<typeof makeRepo>,
+) {
   const config = workerConfig(repo, { serverUrl: app.url, token });
   const adapters = { real: new ClaudeSdkAdapter(config), simulated: new SimulatedAdapter(0) };
   let manager!: SessionManager;
@@ -61,7 +65,10 @@ for (const mode of ["simulated", "real-sdk"] as const) {
         const stub = await startStubAnthropic({
           toolCall: {
             name: "Bash",
-            input: { command: "echo 'export const MAX_ITEMS = 26;' > inventory.ts", description: "write file" },
+            input: {
+              command: "echo 'export const MAX_ITEMS = 26;' > inventory.ts",
+              description: "write file",
+            },
           },
         });
         cleanups.push(stub.close);
@@ -89,15 +96,26 @@ for (const mode of ["simulated", "real-sdk"] as const) {
       });
       expect(created.status).toBe(200);
       const sessionId = created.body.id as string;
-      const detail = async (who = owner) => (await who.req("GET", `/api/sessions/${sessionId}`)).body;
+      const detail = async (who = owner) =>
+        (await who.req("GET", `/api/sessions/${sessionId}`)).body;
 
       // The agent asks for a tool; the collaborator cannot approve it, the owner can.
       const pendingPermission = () =>
-        until(async () => (await detail()).permissionRequests.find((p: any) => p.status === "pending"), 60000, "permission request");
+        until(
+          async () => (await detail()).permissionRequests.find((p: any) => p.status === "pending"),
+          60000,
+          "permission request",
+        );
       const pending = await pendingPermission();
       expect(pending.toolName).toBe("Bash");
-      expect((await collab.req("POST", `/api/permissions/${pending.id}/decision`, { allow: true })).status).toBe(403);
-      expect((await owner.req("POST", `/api/permissions/${pending.id}/decision`, { allow: true })).status).toBe(200);
+      expect(
+        (await collab.req("POST", `/api/permissions/${pending.id}/decision`, { allow: true }))
+          .status,
+      ).toBe(403);
+      expect(
+        (await owner.req("POST", `/api/permissions/${pending.id}/decision`, { allow: true }))
+          .status,
+      ).toBe(200);
 
       // First turn ends and produces a change set with a real diff.
       const cs = await until(async () => (await detail()).changeSet, 60000, "change set");
@@ -115,9 +133,15 @@ for (const mode of ["simulated", "real-sdk"] as const) {
         text: "Please also document the constant",
       });
       expect(ins.body.status).toBe("pending_approval");
-      expect((await owner.req("POST", `/api/instructions/${ins.body.id}/decision`, { approve: true })).status).toBe(200);
+      expect(
+        (await owner.req("POST", `/api/instructions/${ins.body.id}/decision`, { approve: true }))
+          .status,
+      ).toBe(200);
       await until(
-        async () => (await detail()).instructions.some((i: any) => i.id === ins.body.id && i.status === "delivered"),
+        async () =>
+          (await detail()).instructions.some(
+            (i: any) => i.id === ins.body.id && i.status === "delivered",
+          ),
         30000,
         "instruction delivered",
       );
@@ -127,25 +151,46 @@ for (const mode of ["simulated", "real-sdk"] as const) {
         const p2 = await pendingPermission();
         await owner.req("POST", `/api/permissions/${p2.id}/decision`, { allow: true });
       }
-      await until(async () => {
-        const events = (await owner.req("GET", `/api/sessions/${sessionId}/events`)).body.events;
-        return events.filter((e: any) => e.type === "agent.result").length >= 2;
-      }, 60000, "second turn result");
+      await until(
+        async () => {
+          const events = (await owner.req("GET", `/api/sessions/${sessionId}/events`)).body.events;
+          return events.filter((e: any) => e.type === "agent.result").length >= 2;
+        },
+        60000,
+        "second turn result",
+      );
 
       if (mode === "simulated") {
         // The simulator edits the notes file every turn, so a second change set follows.
-        await until(async () => {
-          const events = (await owner.req("GET", `/api/sessions/${sessionId}/events`)).body.events;
-          return events.filter((e: any) => e.type === "changes.updated").length >= 2;
-        }, 30000, "second change set");
+        await until(
+          async () => {
+            const events = (await owner.req("GET", `/api/sessions/${sessionId}/events`)).body
+              .events;
+            return events.filter((e: any) => e.type === "changes.updated").length >= 2;
+          },
+          30000,
+          "second change set",
+        );
       }
 
       // Both members observe the same activity log.
       const ownerEvents = (await owner.req("GET", `/api/sessions/${sessionId}/events`)).body.events;
-      const collabEvents = (await collab.req("GET", `/api/sessions/${sessionId}/events`)).body.events;
-      expect(collabEvents.map((e: any) => e.seq)).toEqual(ownerEvents.map((e: any) => e.seq).slice(0, collabEvents.length));
+      const collabEvents = (await collab.req("GET", `/api/sessions/${sessionId}/events`)).body
+        .events;
+      expect(collabEvents.map((e: any) => e.seq)).toEqual(
+        ownerEvents.map((e: any) => e.seq).slice(0, collabEvents.length),
+      );
       const types = new Set(ownerEvents.map((e: any) => e.type));
-      for (const t of ["session.created", "agent.init", "permission.requested", "permission.decided", "agent.result", "changes.updated", "instruction.approved", "instruction.delivered"]) {
+      for (const t of [
+        "session.created",
+        "agent.init",
+        "permission.requested",
+        "permission.decided",
+        "agent.result",
+        "changes.updated",
+        "instruction.approved",
+        "instruction.delivered",
+      ]) {
         expect(types, t).toContain(t);
       }
       expect(ownerEvents.every((e: any) => e.executionMode === executionMode)).toBe(true);
@@ -161,14 +206,34 @@ for (const mode of ["simulated", "real-sdk"] as const) {
 
       // Review then merge the latest change set.
       const latest = (await detail()).changeSet;
-      expect((await owner.req("POST", `/api/changesets/${latest.id}/merge`, { confirmSimulated: true })).status).toBe(409);
-      expect((await collab.req("POST", `/api/changesets/${latest.id}/reviews`, { decision: "approve", body: "LGTM" })).status).toBe(200);
-      const merge = await owner.req("POST", `/api/changesets/${latest.id}/merge`, { confirmSimulated: true });
+      expect(
+        (await owner.req("POST", `/api/changesets/${latest.id}/merge`, { confirmSimulated: true }))
+          .status,
+      ).toBe(409);
+      expect(
+        (
+          await collab.req("POST", `/api/changesets/${latest.id}/reviews`, {
+            decision: "approve",
+            body: "LGTM",
+          })
+        ).status,
+      ).toBe(200);
+      const merge = await owner.req("POST", `/api/changesets/${latest.id}/merge`, {
+        confirmSimulated: true,
+      });
       expect(merge.status).toBe(200);
-      const merged = await until(async () => {
-        const c = (await detail()).changeSet;
-        return c?.status === "merged" ? c : c?.status === "merge_failed" ? Promise.reject(new Error(c.mergeError)) : undefined;
-      }, 30000, "merge");
+      const merged = await until(
+        async () => {
+          const c = (await detail()).changeSet;
+          return c?.status === "merged"
+            ? c
+            : c?.status === "merge_failed"
+              ? Promise.reject(new Error(c.mergeError))
+              : undefined;
+        },
+        30000,
+        "merge",
+      );
       expect(merged.mergeCommit).toMatch(/^[0-9a-f]{40}$/);
       const mergedFile = mode === "real-sdk" ? "inventory.ts" : ".pairloom/simulated-notes.md";
       expect(existsSync(join(repo.repo, mergedFile))).toBe(true);
@@ -179,7 +244,11 @@ for (const mode of ["simulated", "real-sdk"] as const) {
 
       // Stop is explicit and observed by both users.
       await owner.req("POST", `/api/sessions/${sessionId}/stop`);
-      await until(async () => (await detail(collab)).session.status === "stopped", 30000, "stopped");
+      await until(
+        async () => (await detail(collab)).session.status === "stopped",
+        30000,
+        "stopped",
+      );
     }, 180000);
   });
 }
@@ -199,7 +268,8 @@ describe("worker restart", () => {
       executionMode: "simulated",
     });
     const sessionId = created.body.id as string;
-    const status = async () => (await owner.req("GET", `/api/sessions/${sessionId}`)).body.session.status;
+    const status = async () =>
+      (await owner.req("GET", `/api/sessions/${sessionId}`)).body.session.status;
     await until(async () => (await status()) === "awaiting_approval", 15000, "awaiting approval");
 
     // Simulate a worker crash: the process (and live agent) is gone.

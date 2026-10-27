@@ -1,3 +1,10 @@
+import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Relative paths in config are relative to the repository root, whatever the cwd. */
+const REPO_ROOT = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+const fromRoot = (p: string) => (p === ":memory:" || isAbsolute(p) ? p : resolve(REPO_ROOT, p));
+
 export interface ServerConfig {
   port: number;
   host: string;
@@ -30,11 +37,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
         .map((s) => s.trim())
         .filter(Boolean),
     ],
-    databasePath: env.DATABASE_PATH ?? "./data/pairloom.sqlite",
+    databasePath: fromRoot(env.DATABASE_PATH ?? "./data/pairloom.sqlite"),
     secureCookies: env.SECURE_COOKIES === "true" || publicOrigin.startsWith("https://"),
     sessionTtlHours: Number(env.SESSION_TTL_HOURS ?? 24 * 7),
     inviteTtlHours: Number(env.INVITE_TTL_HOURS ?? 72),
     openSignup: env.OPEN_SIGNUP !== "false",
-    webDistDir: env.WEB_DIST_DIR ?? null,
+    webDistDir: env.WEB_DIST_DIR ? fromRoot(env.WEB_DIST_DIR) : null,
   };
 }
