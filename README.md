@@ -1,34 +1,44 @@
 # Pairloom
 
-A multiplayer workspace around a Claude coding agent. Several people share one
-agent session: everyone sees its activity live, collaborators propose
-instructions that the host approves, the host approves tool use from the browser,
-and the agent's changes are reviewed as a real git diff before they are merged.
+A multiplayer workspace around an AI coding agent. Several people share one agent
+session:
+- everyone sees its activity live;
+- collaborators propose instructions that the host approves;
+- the host approves sensitive tool use from the browser;
+- anyone on the team can run the project's tests;
+- the agent's changes are reviewed as a real git diff before they are merged.
 
-- `PROJECT_PLAN.md`: scope, milestones to Friday 30 Oct, acceptance criteria, risks, deferred work
-- `ARCHITECTURE.md`: components, the Claude Agent SDK evidence, the security and reliability model
+The agent runs on a **worker** process, not in anyone's browser, so closing the
+browser does not stop it.
 
-> **Real vs simulated.** Real sessions run Claude Code through the official
-> Claude Agent SDK and need a model credential (API key, Bedrock or Vertex) **on
-> the worker**. Without one, only *simulated* sessions are available. They
-> exercise the same collaboration flow, write a clearly labelled notes file, and
-> carry a SIMULATED label on every event, change set, and screen.
+Other docs:
+- `PROJECT_PLAN.md`: scope, milestones to Friday 30 Oct, acceptance criteria, cost estimate, risks.
+- `ARCHITECTURE.md`: components, the provider decision and evidence, sandbox and
+  permissions, and what persistence does and doesn't cover today.
+
+> **Real vs simulated vs mocked.**
+> - **Real** sessions use Pairloom's own agent harness against a model API.
+>   Groq `openai/gpt-oss-120b` is the default and needs `GROQ_API_KEY` on the worker.
+> - **Simulated** sessions call no model. They are labelled SIMULATED everywhere.
+> - Automated tests use a **mocked provider** (a scripted local endpoint). That
+>   proves the product plumbing, not model quality.
+>
+> **No real-provider run has happened yet.**
 
 ## Layout
 
 ```
-apps/server   Fastify API + realtime hub + SQLite (node:sqlite)
-apps/worker   Agent worker: Claude Agent SDK adapter, simulator, git worktrees
-apps/web      React UI (Vite)
-packages/shared  Protocol schemas and types
-scripts/      dev runner, demo repo, browser smoke test
+apps/server       Fastify API + realtime hub + SQLite (node:sqlite)
+apps/worker       Worker: harness (tool loop, sandbox, provider client), simulator, git worktrees
+apps/web          React UI (Vite)
+packages/shared   Protocol schemas and types
+samples/tiny-cart Disposable sample app used for demos and tests (no dependencies)
+scripts/          dev runner, sample repo, browser smoke test, agent scenario
 ```
 
-## Requirements
-
-Node 22.13+ (uses the built-in `node:sqlite`) and git. Playwright/Chromium only for the UI smoke test.
-
 ## Local development
+
+Requires Node 22.13+ and git.
 
 ```bash
 npm install
@@ -36,55 +46,40 @@ cp .env.example .env                 # server settings (no secrets needed locall
 npm run dev                          # server on :8787 + web on :5173
 ```
 
-Open http://localhost:5173 and create an account, a workspace and a project, then
-**Register worker**. Copy the token it shows once into the worker env:
-
-```bash
-cp .env.worker.example .env.worker   # set PAIRLOOM_WORKER_TOKEN and PAIRLOOM_REPO_PATH
-npm run demo:repo                    # optional: throwaway repo at ./data/demo-repo
-npm run dev:worker
-```
-
-Invite a second person from the workspace page (single-use link). Use a private
-window to act as them.
-
-### Running a real agent on Rogue
-
-1. Make a **dedicated** clone for the worker. It creates branches and worktrees
-   there and merges reviewed changes into the base branch locally:
-   `git clone <rogue-url> ~/pairloom/rogue`
-2. In `.env.worker`, set `PAIRLOOM_REPO_PATH=~/pairloom/rogue` (absolute path)
-   and `ANTHROPIC_API_KEY=…`. Keep `CLAUDE_MAX_BUDGET_USD` set.
-3. Start the worker. The project page shows "Real agent (Claude Agent SDK): available".
-4. Start a session with execution "Real Claude agent".
-
-Merges are local to the worker's clone and are **never pushed**. Pushing is a
-deliberate future feature.
+1. Open http://localhost:5173. Create an account, a workspace and a project
+   (base branch `main`).
+2. Click **Register worker** and copy the token. It is shown once.
+3. Start the worker:
+   ```bash
+   npm run sample:repo                  # creates ./data/sample-repo from samples/tiny-cart
+   cp .env.worker.example .env.worker   # set PAIRLOOM_WORKER_TOKEN; set GROQ_API_KEY for real sessions
+   npm run dev:worker
+   ```
+4. Invite a second person from the workspace page. Use a private window to play them.
+5. Start a session. A ready-made task is in `samples/tiny-cart/README.md`.
 
 ## Checks
 
 ```bash
-npm run check        # typecheck + tests + prettier
-npm test             # vitest: 45 tests
-npm run smoke:ui     # builds the web app, then drives two browsers through the full flow
+npm run check                         # typecheck + 89 tests (no network, no paid APIs) + prettier
+npm run smoke:ui                      # two browsers, simulated agent, full flow
+npm run build && node scripts/agent-scenario.mjs   # two browsers, REAL harness + MOCKED model
 ```
 
-The worker tests run the **real** Claude Agent SDK and bundled Claude Code CLI
-against a local stub of the Messages API. The stub returns fixed replies, so these
-tests prove the integration (spawn, streaming, approvals, tool execution,
-error reporting), not model quality.
+Real-provider checks. These spend money, only a few cents per run:
 
-## Deploying privately (single VM)
+```bash
+GROQ_API_KEY=... PAIRLOOM_REAL_PROVIDER_TEST=1 npm run test:real
+GROQ_API_KEY=... PROVIDER=groq node scripts/agent-scenario.mjs
+```
 
-1. `npm ci && npm run build`
-2. Server env: `PUBLIC_ORIGIN=https://pairloom.example.internal`,
-   `WEB_DIST_DIR=./apps/web/dist`, `OPEN_SIGNUP=false` after the first owner signs
-   up, `TRUST_PROXY=true` behind a reverse proxy. Run `npm start` under systemd.
-   Put Caddy or nginx in front for TLS, with WebSocket upgrade enabled for `/ws`.
-3. Cloud worker on the same VM (or another box): a dedicated clone, `.env.worker`
-   with the server URL, worker token and API key. Run `npm run start -w @pairloom/worker`
-   under systemd. Agents keep running when every browser is closed.
-4. Back up `data/pairloom.sqlite` and the worker's `data/worker-state` (holds the
-   event outbox and Claude transcripts used for resume).
+## Deploying privately (not yet done; see Thursday in PROJECT_PLAN.md)
 
-Container images are not provided yet. The Thursday milestone covers verifying a deployment recipe.
+- **Server:** `npm ci && npm run build`. Set `PUBLIC_ORIGIN=https://…`,
+  `WEB_DIST_DIR=./apps/web/dist` and `OPEN_SIGNUP=false`. Run `npm start` behind
+  TLS, with WebSocket upgrade enabled for `/ws`.
+- **Worker:** a dedicated clone, `.env.worker` with the server URL, worker token
+  and `GROQ_API_KEY`, and `PAIRLOOM_STATE_DIR` on a persistent volume. Run
+  `npm run start -w @pairloom/worker` under a supervisor with automatic restart,
+  as an unprivileged user in a container or VM that only contains the project.
+- **Backups:** `data/pairloom.sqlite` and the worker state directory.

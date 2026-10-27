@@ -1,211 +1,219 @@
 # Pairloom architecture
 
-Pairloom is a multiplayer workspace around a Claude coding agent. Several people
-watch the same agent session, propose instructions, approve tool use, and review
-the agent's code changes before they are merged.
+Pairloom is a multiplayer workspace around an AI coding agent. Several people
+watch the same agent session, propose instructions, approve tool use, run the
+project's tests, and review the agent's code changes before they are merged.
 
 ```
  Browser (React)  ──HTTPS/WSS (cookie)──►  Collaboration server  ◄──WSS (worker token)──  Agent worker
-  owner / collaborator / viewer            Fastify + SQLite                              Claude Agent SDK
-                                           authz, event log,                             + Claude Code CLI
-                                           command queue, realtime                       git worktrees
+  owner / collaborator / viewer            Fastify + SQLite                              Pairloom harness
+                                           authz, event log,                             (tool loop) ──HTTPS──► Groq API
+                                           command queue, realtime,                      git worktrees,
+                                           heartbeats                                    sandboxed tools
 ```
 
 The worker always dials **out** to the server. The same worker program runs in a
-cloud container (target) or on a teammate's machine (local companion). The
-collaboration layer cannot tell the difference and does not need to.
+cloud container (target) or on someone's machine. The collaboration layer cannot
+tell the difference and does not need to.
 
 ## 1. Components
 
 | Component | Code | Responsibility |
 | - | - | - |
-| Browser app | `apps/web` | React SPA. Auth screens, workspace and project management, the session room (activity feed, approvals, instruction composer, diff review, merge). It has no secrets and makes no direct agent calls. |
-| Collaboration server | `apps/server` | REST API, cookie auth, server-side authorization for every operation, the durable session event log, the durable worker command queue, and realtime fan-out to browsers and workers. Also serves the built web app. |
-| Shared protocol | `packages/shared` | Zod schemas and types for the worker↔server and browser↔server protocols, statuses, limits. |
-| Agent worker | `apps/worker` | Connects to the server with a worker token and runs agent sessions through an **adapter**: `ClaudeSdkAdapter` (real) or `SimulatedAdapter` (scripted). Owns git worktrees, snapshots, and merges. |
+| Browser app | `apps/web` | Auth, workspaces, projects, and the session room: activity feed, approvals, instruction composer, "run tests", diff review, merge. No secrets, no direct model calls. |
+| Collaboration server | `apps/server` | REST API, cookie auth, server-side authorization, durable event log, durable worker command queue, realtime fan-out, WebSocket heartbeats, startup reconciliation. Serves the built web app. |
+| Shared protocol | `packages/shared` | Zod schemas and types for both protocols, statuses, limits. |
+| Agent worker | `apps/worker` | Runs sessions through an **adapter**, owns git worktrees, snapshots, test runs, and merges. |
+| Sample project | `samples/tiny-cart` | Disposable, dependency-free app we own. `scripts/sample-repo.sh` turns it into a standalone git repo for demos and tests. |
 
-## 2. Agent execution adapter (the critical decision)
+## 2. Agent execution
 
-### What the official interface supports (verified 2026-10-27)
+### Decision (2026-10-27): our own harness over an OpenAI-compatible API, Groq primary
 
-Sources: the Agent SDK overview, TypeScript reference, permissions, user input,
-sessions and hosting pages at `code.claude.com/docs/en/agent-sdk/*`, the Managed
-Agents docs at `platform.claude.com/docs/en/managed-agents/*`, and the
-type definitions shipped in `@anthropic-ai/claude-agent-sdk@0.3.311`.
+The MVP does not use the Anthropic API. The Claude Agent SDK / Claude Code CLI
+can't be pointed at a Groq or OpenAI key, so we use approach **A**: a small tool
+loop that Pairloom controls (`apps/worker/src/harness/`). It calls the Chat
+Completions API with function tools and enforces every permission and limit
+itself.
 
-| Need | Supported mechanism | Status |
+Evidence (official docs, checked 2026-10-27):
+
+| | Groq `openai/gpt-oss-120b` (chosen) | OpenAI Codex SDK (approach B, rejected for Friday) |
 | - | - | - |
-| Launch Claude Code programmatically | `query({ prompt, options })` spawns the bundled `claude` CLI (2.1.311) as a subprocess. | **Proven here.** Tests run the real SDK and CLI. |
-| Feed instructions from remote people into a live session | Streaming input mode: `prompt` is an `AsyncIterable<SDKUserMessage>`. We push one message per approved instruction. | **Proven** (two-turn e2e test). |
-| Observe activity | `SDKMessage` stream: `system/init` (session id, model, CLI version), `assistant` (text and tool_use blocks), `user` (tool_result), `result` (`success` / `error_*`, cost, turns), `system/api_retry`. | **Proven.** |
-| Human tool approval from a browser | `canUseTool(toolName, input, {signal, title, …})` → `{behavior:'allow'|'deny'}`. Docs: "The callback can stay pending indefinitely." | **Proven**: an allowed Bash call runs; a denied one does not. |
-| Interrupt / stop | `Query.interrupt()` (streaming mode only), `Query.close()`, `abortController`. | Interrupt is used for credential failures (tested). Host-initiated interrupt against a real model is untested. |
-| Resume after restart | `options.resume = <session_id>`. Transcripts are on worker disk (`CLAUDE_CONFIG_DIR/projects`). `SessionStore` mirrors transcripts to shared storage for cross-host resume. | Same-host resume is wired, not yet exercised against a real model. `SessionStore` is **not** implemented yet. |
-| Authentication | `ANTHROPIC_API_KEY`, Amazon Bedrock, or Google Vertex. "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK." | **Provider-dependent.** Pairloom only uses API key / Bedrock / Vertex. Subscription login is not used. |
-| Anthropic-hosted alternative | **Managed Agents** (beta header `managed-agents-2026-04-01`): server-side sessions with persisted event history, SSE streaming, `user.message` steering, `user.interrupt`, tool confirmations, cloud or self-hosted sandboxes. | **Requires an experiment.** It is a different harness from Claude Code (no CLAUDE.md/skills parity guaranteed). Candidate future adapter. |
+| Interface | OpenAI-compatible Chat Completions at `https://api.groq.com/openai/v1`. Tool use via `tools` / `tool_calls`. "All models hosted on Groq support tool use." | `@openai/codex-sdk`, which bundles a Codex runtime. Approvals go through its app server. Per-command programmatic approval is not documented in the SDK page. |
+| Model status | Production. 131,072 context, 65,536 max output. No parallel tool calls on gpt-oss (the harness is sequential anyway). | `gpt-5.3-codex` |
+| Price (per 1M tokens) | $0.15 input / $0.075 cached / $0.60 output | $1.75 / $0.175 / $14.00 |
+| Rate limits | Docs list 30 RPM / 1K RPD / 8K TPM / 200K TPD for gpt-oss-120b. **Could not confirm** whether that is the Free or Developer plan. Your org's real limits are on the console's limits page. 429 carries `retry-after`. | n/a |
+| Fit | Thin, provider-neutral, approval-friendly, cheap | Strong agent, but OpenAI-only, heavier, and the approval integration is unproven for Friday |
 
-Two behaviours found by running the real CLI shaped the code:
+Other Groq models also support tools. `llama-3.3-70b-versatile` is production.
+`qwen/qwen3.8-27b` and `minimaxai/minimax-m2.7` are preview, and preview models
+"may be discontinued at short notice". The model is configurable with `LLM_MODEL`.
 
-1. On HTTP 401 the CLI emits `system/api_retry` and retries **10 times with backoff
-   (~2+ minutes)** before giving up. The adapter surfaces every retry as a
-   visible notice, and on a repeated 401/403 it reports "credential rejected" and
-   interrupts, rather than appearing to "work" for minutes.
-2. `bypassPermissions` cannot run as root outside a recognised sandbox, and allow
-   rules silently bypass `canUseTool`. So we never use `bypassPermissions`. Bash
-   always reaches the host.
-
-### Options compared
-
-| | Cloud-hosted isolated worker | Local companion | **Hybrid (chosen)** |
-| - | - | - | - |
-| Survives browsers closing | Yes | Only while the laptop is awake | Yes when the worker is in the cloud |
-| Friday feasibility | Needs a VM/container plus a dedicated repo clone and API key: hours, not days | Works today on any machine with git and Node | Same binary for both, so Friday can ship with either |
-| Repo access | Deploy key / token in the container | User's existing checkout (we require a dedicated clone) | Either |
-| Credentials | Org API key in the container | Teammate's own key | Per worker |
-| Risk | Infra setup, secrets handling | Contradicts the long-term "no awake laptop" goal | Must keep the protocol host-agnostic (it is) |
-
-**Recommendation.** One worker program and one protocol, deployed first as a
-**cloud worker** on the same private VM as the server, with a dedicated clone of
-Rogue and an org API key. The agent then keeps running when every browser closes.
-That is the persistence target, and it costs only a long-running process. The
-same worker can run as a local companion when someone wants the agent on their
-own machine. Managed Agents is the candidate next adapter if we want Anthropic to
-host the sandbox. It stays out of the Friday path because it is a beta API
-and a different harness.
+**Not yet proven:** gpt-oss-120b on Groq has **not** been run against this
+harness. No Groq key was available. Whether it reliably completes the sample
+task through tool calling is the first thing to establish
+(`npm run test:real`). If it doesn't, try `llama-3.3-70b-versatile` on Groq next
+(same code, `LLM_MODEL`), then OpenAI (`LLM_PROVIDER=openai`, configuration only
+today).
 
 ### Adapter boundary
 
 ```ts
 interface AgentAdapter { info(): AdapterInfo; start(ctx: AgentContext): Promise<AgentRun> }
 interface AgentRun     { send(text): void; interrupt(): Promise<void>; stop(): Promise<void> }
-// ctx: emit(event), requestPermission(ask) → allow|deny, onTurnStart/End, onExit, onProviderSession
 ```
 
-The worker reports each adapter's availability (for example "no ANTHROPIC_API_KEY
-on worker"). The server refuses to create a real session on a worker whose real
-adapter is unavailable. The UI disables that option and says why.
+| Adapter | Kind | Status |
+| - | - | - |
+| `HarnessAdapter` (`harness/agent.ts`) over `OpenAICompatibleClient` (`harness/provider.ts`) | `llm-harness` | **Default real adapter** |
+| `SimulatedAdapter` | `simulated` | Scripted; labelled SIMULATED everywhere; never calls a model |
+| `ClaudeSdkAdapter` | `claude-agent-sdk` | Legacy opt-in (`PAIRLOOM_REAL_ADAPTER=claude-agent-sdk`). Not used by the MVP. |
 
-## 3. Authentication
+Adding a provider means adding a preset (same wire format) or a new `ModelClient`
+implementation. The tool loop, sandbox and limits are provider-agnostic.
 
-* Email + password (scrypt, 16-byte salt). Sessions are random 256-bit tokens in
-  an `httpOnly`, `SameSite=Lax` cookie (`Secure` when served over HTTPS). Only the
-  SHA-256 of a token is stored. Expired sessions are deleted on use.
-* Signup can be closed (`OPEN_SIGNUP=false`) so only invite holders can register.
-* Worker auth: a per-worker bearer token (`plw_…`), shown once and stored as a
-  SHA-256 hash. It is bound to one project and can be revoked, which disconnects
-  the worker.
-* Deferred: GitHub OAuth, password reset, 2FA.
+### The harness loop
 
-## 4. Authorization (server-side, every request)
+For each approved instruction:
 
-Roles per workspace: **owner**, **collaborator**, **viewer**.
+1. Append it to the transcript.
+2. Call the model with tools.
+3. Stream any text.
+4. Execute each tool call, after the permission check, and append the result.
+5. Repeat until the model answers without tool calls (`end_turn`) or a limit or error stops it.
 
-| Action | viewer | collaborator | owner |
-| - | - | - | - |
-| Read workspace, project, session, events, diff | ✓ | ✓ | ✓ |
-| Propose an instruction | | ✓ (pending until an owner approves) | ✓ (delivered immediately) |
-| Review a change set | | ✓ | ✓ |
-| Approve/deny tool use, approve/reject instructions | | | ✓ |
-| Start/stop/interrupt/resume sessions, register workers | | | ✓ |
-| Invite, remove members, create projects | | | ✓ |
-| Merge (requires ≥1 standing approval, latest change set, explicit confirmation if simulated) | | | ✓ |
+The transcript is written to `PAIRLOOM_STATE_DIR/transcripts/<session>.json`
+after every step.
 
-Rules:
-* Non-members get **404**, never 403, so ids don't leak existence.
-* Insufficient role gets 403.
-* Workers can only append agent/worker event types, and only to sessions assigned
-  to them. They cannot author instructions, approvals, or reviews.
-* Realtime frames re-check membership on every send. Removing a member stops
-  their stream immediately.
-* `Origin` allowlist on mutating HTTP requests and on browser WebSocket upgrades
-  (CSRF and cross-site WebSocket hijacking).
+`end_turn` means the model stopped calling tools. It does **not** mean the task
+succeeded. The UI labels it "unverified until tests and review", and records the
+agent's last test exit code. A separate **run tests** button lets reviewers run
+the project's configured test command themselves. That command comes from
+`.pairloom.json` in the base clone, which the agent cannot edit.
 
-Collaborators never get a terminal. The only path from a person to the agent is
-an approved instruction (text, ≤8000 chars, 20 per minute per user). The only
-path to a side effect is a tool call the agent proposes and an owner approves
-(or that the session policy auto-approves: file edits inside the worktree).
+### Tools and permissions
 
-## 5. Repository access and change isolation
-
-* The worker owns a **dedicated clone** (`PAIRLOOM_REPO_PATH`). It must not be
-  anyone's day-to-day working copy.
-* Each session gets its own `git worktree` on branch `pairloom/<id>`, created from
-  the base branch. Agents never share a working directory.
-* At the end of each turn the worker commits everything in the worktree
-  ("checkpoint") and uploads `git diff base..head` (≤512 KB) and numstat as a
-  **change set**. Older open change sets are marked superseded.
-* Merge is a separate command. The worker refuses it when:
-  - the branch head differs from the reviewed `headCommit`;
-  - the clone is dirty;
-  - the agent is mid-turn.
-  It merges with `--no-ff` locally and aborts on conflicts. **Nothing is ever
-  pushed**; pushing and opening PRs is a deferred, explicit feature.
-* Agent deny rules: `git push/remote/checkout/switch/worktree/reset --hard/merge/rebase`
-  and `sudo`. Pattern rules are best-effort, which is why Bash always needs host
-  approval.
-* Agent subprocess env is an **allowlist** (PATH, HOME, proxy/CA vars, model
-  credentials). The worker token and other host secrets never reach the agent's
-  shell. Note that the model API key is visible to the agent's shell. Hardening:
-  route the model through a key-injecting proxy (`ANTHROPIC_BASE_URL`), as the
-  hosting docs recommend.
-
-## 6. Realtime events and reliability
-
-* **Event log.** Every session has an append-only log with a per-session
-  monotonically increasing `seq`. Each event is stamped with the session's
-  `executionMode`, so simulated activity can never be presented as real.
-* **Worker → server.** At-least-once delivery. The worker generates a UUID per
-  event, keeps unacked events in a persisted outbox, and resends after reconnect.
-  The server stores `event_uid` under a UNIQUE constraint, drops duplicates, and
-  acks.
-* **Server → worker.** Commands (start, message, permission decision, interrupt,
-  stop, refresh, merge) are persisted with UUIDs and resent until acked. The
-  worker remembers processed command ids and outcomes, so a lost ack is answered
-  with the original result instead of re-executing. Commands for one session run
-  strictly in order.
-* **Browser.** `subscribe_session{afterSeq}` replays history and then streams
-  live. On reconnect the client resubscribes from its last seq and dedupes by seq.
-* **Heartbeats.** The worker pings every 15s and reconnects after 45s of silence,
-  with exponential backoff to 30s.
-
-## 7. Session lifecycle and persistence
-
-`pending → starting → idle ⇄ running ⇄ awaiting_approval → stopping → stopped`,
-plus `disconnected`, `interrupted`, `completed`, `failed`.
-
-* Worker socket drops → live sessions become **disconnected**. The agent may still
-  be running, and the UI says so.
-* Worker reconnects and reports the session live → its real status is restored.
-* Worker reconnects **without** the session (process restarted) → **interrupted**.
-  Pending approvals expire and undelivered commands fail visibly. The UI states
-  that the live agent was lost, and that a stored transcript is history, not a
-  live agent.
-* **Resume** (owner) sends a new `start` with `resume: <provider session id>` in the
-  same worktree. That works only if that worker still has the transcript on disk.
-  Cross-host resume needs `SessionStore` (next step).
-* A worker can never revive a session the server has already ended.
-* "Success" is shown only as the provider's own `result.subtype` / `is_error`.
-  Change sets come from real `git diff` output, never from the agent's
-  description.
-
-## 8. Data model (SQLite, `apps/server/src/db.ts`)
-
-`users`, `auth_sessions`, `workspaces`, `memberships`, `invitations` (hashed,
-single-use, expiring, revocable), `projects`, `workers` (hashed token, last
-adapters report, revocation), `agent_sessions` (status, mode, policy, host, worker,
-provider session id, branch, timestamps, error), `session_events`, `instructions`,
-`permission_requests`, `change_sets`, `reviews`, `worker_commands`.
-
-SQLite uses Node's built-in `node:sqlite`, so there are no native build steps.
-That suits a single-node private deployment. All SQL lives in `core.ts`, `auth.ts`
-and `db.ts`, which contains a later move to Postgres.
-
-## 9. Security boundaries (summary)
-
-| Boundary | Enforcement |
+| Tool | Default permission |
 | - | - |
-| Browser ↔ server | Cookie session, Origin allowlist, zod validation, body limit 1 MB, role checks in `Core` |
-| Server ↔ worker | Per-project revocable worker token; worker scoped to its own sessions and event types |
-| Worker ↔ agent | Allowlisted env, isolated worktree, `acceptEdits` limited to the worktree, deny rules, host approval for everything else, `maxTurns`/`maxBudgetUsd` caps |
-| Agent ↔ repository | Branch per session; merge only after review, head-checked, local, never pushed |
-| Secrets | Never sent to the browser; worker tokens shown once; model keys only in the worker env |
+| `list_files`, `search`, `read_file` | Automatic. Reading `.env*`, `*.pem`, `*.key`, ssh keys or `.npmrc` asks the host. |
+| `write_file`, `edit_file` | Automatic under "accept edits in worktree"; ask under "ask every time" |
+| `run_tests` (project's `testCommand`) | Same as edits |
+| `delete_file` | **Always asks** |
+| `run_command` (argv, no shell) | **Always asks**, unless the exact argv is allowlisted in `.pairloom.json` and the policy accepts edits |
+
+Hard boundaries, regardless of approval:
+- Paths resolve inside the session worktree. `..`, absolute paths outside it,
+  symlink escapes, writes through symlinks, `.git`, and writes to `.pairloom.json`
+  are refused.
+- Hard-denied commands: `sudo su doas ssh scp sftp rsync nc ncat telnet curl wget
+  shutdown reboot mkfs dd`. Also `git push/remote/checkout/switch/worktree/reset/
+  rebase/merge/config/filter-branch/gc/clean`, and `rm` of `/` or `~`.
+- Commands run with `shell: false` in their own process group. The whole group is
+  killed on timeout (`AGENT_COMMAND_TIMEOUT_SECONDS`) or interrupt. Output is
+  capped (32 KB tail).
+- The command environment contains only `PATH`, a sandbox `HOME`, `LANG`, `CI=1`.
+  **The model API key and the worker token are not visible to anything the agent
+  runs.** (This improves on the legacy Claude adapter.) Tests verify it.
+
+**Honest limitation:** this is application-level sandboxing, not OS isolation.
+An approved command runs with the worker user's OS permissions. Production
+workers must run in a container or VM that only has the project clone, a
+persistent state volume, and egress to the model API. That deployment hardening
+is not done yet.
+
+### Cost and operational controls
+
+* Limits per task/session: `AGENT_MAX_ITERATIONS_PER_TURN` (25),
+  `AGENT_MAX_MODEL_CALLS_PER_SESSION` (80, retries included),
+  `AGENT_MAX_TURN_SECONDS` (600), `AGENT_MAX_COST_USD_PER_SESSION` (0.50,
+  estimated from reported token usage × published prices).
+* No hidden retry loops. At most `LLM_MAX_RETRIES` (1) retry, only for
+  429/5xx/network, only if `retry-after` ≤ `LLM_MAX_RETRY_WAIT_SEC` (20). Every
+  retry is a counted, visible model call. Auth (401/403) and quota/billing errors
+  are never retried. A malformed tool call (`tool_use_failed`) gets one
+  corrective re-prompt.
+* Every failure becomes a typed `agent.error` plus `agent.result{subtype:"error_provider_<kind>"}`
+  with kinds `missing_credentials | auth | rate_limited | quota_or_billing |
+  bad_request | tool_call_malformed | context_too_large | server | network |
+  timeout | cancelled`. Messages name the env var, never the key.
+* A worker without a key reports the real adapter as unavailable. The server
+  refuses real sessions on it, and the UI disables the option and says why.
+* A non-default `LLM_BASE_URL` is shown as "custom endpoint host:port", never as
+  the named provider, and published prices are not applied to it.
+
+## 3. Authentication and authorization
+
+Unchanged from the first slice:
+* Email + password (scrypt). Random session tokens stored as SHA-256, in an
+  `httpOnly`, `SameSite=Lax` cookie.
+* Per-project revocable worker tokens, stored hashed and shown once.
+* Roles: owner / collaborator / viewer.
+* Non-members get 404.
+* Collaborator instructions need owner approval.
+* Only owners approve tools, interrupt, stop, resume and merge.
+* Collaborators and owners can run tests and review.
+* Origin allowlist on mutating requests and WebSocket upgrades.
+* Every realtime frame re-checks membership.
+
+## 4. Repository isolation and review
+
+* The worker owns a dedicated clone (`PAIRLOOM_REPO_PATH`). For the MVP that is
+  the disposable sample repo.
+* Each session gets its own git worktree and branch `pairloom/<id>`.
+* At turn end the worker commits a checkpoint and uploads the diff (≤512 KB) as a
+  change set. A re-sent snapshot with an unchanged head is ignored.
+* Merge requires the owner, at least one standing approval, the latest change
+  set, and an unchanged head. It aborts on conflicts. It is local only, **never
+  pushed**.
+
+## 5. Realtime and reliability
+
+* Append-only per-session event log with monotonic `seq`. Every event is stamped
+  with the session's execution mode (real or simulated).
+* Worker → server: at-least-once delivery via a persisted outbox. The server
+  dedupes by event UUID.
+* Server → worker: persisted commands, resent until acked. The worker remembers
+  outcomes, so a lost ack is answered without re-executing.
+* Browsers resubscribe with `afterSeq` and dedupe by seq.
+* **Heartbeats in both directions.** The worker pings every 15s and reconnects
+  after 45s of silence. The server pings every socket every `WS_HEARTBEAT_MS`
+  (20s) and terminates sockets that miss a pong. This catches half-open
+  connections from dead VMs; before this, such a worker looked "online" forever.
+* **Startup reconciliation.** On server start, sessions recorded as live become
+  `disconnected` until their worker reconnects and reports them.
+
+## 6. Cloud persistence: what is and isn't true today
+
+| Property | Status | Evidence |
+| - | - | - |
+| Collaboration state (users, sessions, events, instructions, approvals, change sets) survives browser disconnects and server restarts | **Yes**, SQLite on disk | lifecycle tests; server restart reconciliation test |
+| The agent keeps running when every browser closes | **Yes**, it runs in the worker process, not the browser | `agent-scenario.mjs` closes the owner's browser mid-task; the collaborator sees work continue |
+| Collaborators reconnect and catch up | **Yes**: replay from `afterSeq` | realtime tests, scenario |
+| A crashed or killed worker is reported truthfully | **Yes**: `disconnected` → `interrupted`, pending approvals expire, undelivered instructions fail visibly, no fabricated result | e2e-harness test, scenario (SIGKILL) |
+| A running agent process survives a worker crash | **No.** The in-flight turn is lost (model call, half-run command, maybe half-edited files). | by design; documented in UI |
+| Recovery after a worker crash | **Partial.** The owner clicks Resume. The worker reloads the saved transcript and worktree from its state volume and continues; the model is told the last turn was cut off. Only works if the **same state volume** is available (same host or a re-attached persistent disk). | e2e-harness and scenario resume steps |
+| Cross-host recovery (worker comes back on a fresh machine) | **No.** Transcripts and worktrees are on the worker's disk. Next: put transcripts in the server DB and push branches to a remote. | — |
+| Hosted deployment of server + worker | **Not done.** No container image or service definition has been built or run. The worker is a plain long-running Node process, so it can be run under systemd or in a container with a persistent volume. | — |
+| Automatic restart of a crashed worker | **No.** Needs a supervisor (systemd `Restart=always`, container restart policy). | — |
+
+## 7. Data model
+
+SQLite (`node:sqlite`) with these tables: `users`, `auth_sessions`,
+`workspaces`, `memberships`, `invitations`, `projects`, `workers` (adapters
+report includes provider and model), `agent_sessions`, `session_events`,
+`instructions`, `permission_requests`, `change_sets`, `reviews`,
+`worker_commands`.
+
+## 8. Test layers (kept separate on purpose)
+
+| Layer | What it proves | How |
+| - | - | - |
+| Unit/integration (server) | authz, lifecycle, heartbeats, reconciliation, dedupe | `npm test` |
+| Sandbox/tools | path boundary, permissions, command limits, env hygiene | `npm test` (`tools.test.ts`) |
+| **Mocked provider** | harness loop, limits, every error class, interrupt, crash/resume, end-to-end product flow incl. the sample app's real tests | `npm test` (`harness.test.ts`, `e2e-harness.test.ts`), `node scripts/agent-scenario.mjs` (browser) |
+| Simulator | collaboration flow without any model | `npm test` (`e2e.test.ts`), `npm run smoke:ui` |
+| Legacy Claude SDK | the old adapter still works against a local stub | `npm test` (`claudeAdapter.test.ts`) |
+| **Real provider** | a real model completes the sample task; a bad key fails correctly | `GROQ_API_KEY=… PAIRLOOM_REAL_PROVIDER_TEST=1 npm run test:real`; browser: `GROQ_API_KEY=… PROVIDER=groq node scripts/agent-scenario.mjs`. **Not run yet.** |
+
+A mocked endpoint is not proof that a real model can do the work.
