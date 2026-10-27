@@ -103,6 +103,8 @@ export const SessionCommand = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("interrupt") }),
   z.object({ kind: z.literal("stop") }),
   z.object({ kind: z.literal("refresh_changes"), branchName: z.string(), baseBranch: z.string() }),
+  /** Run the project's configured test command in the session worktree (fixed command, not user input). */
+  z.object({ kind: z.literal("run_checks"), branchName: z.string(), baseBranch: z.string() }),
   MergeCommand,
 ]);
 export type SessionCommand = z.infer<typeof SessionCommand>;

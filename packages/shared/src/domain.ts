@@ -60,7 +60,13 @@ export const PermissionPolicy = z.enum([
 ]);
 export type PermissionPolicy = z.infer<typeof PermissionPolicy>;
 
-export const AdapterKind = z.enum(["claude-agent-sdk", "simulated"]);
+/**
+ * - llm-harness: Pairloom's own tool loop over an OpenAI-compatible Chat Completions API
+ *   (primary provider: Groq). The application controls tools and permissions.
+ * - claude-agent-sdk: legacy adapter (Claude Code via the Agent SDK); opt-in, not used by the MVP.
+ * - simulated: scripted, no model.
+ */
+export const AdapterKind = z.enum(["llm-harness", "claude-agent-sdk", "simulated"]);
 export type AdapterKind = z.infer<typeof AdapterKind>;
 
 export const AdapterInfo = z.object({
@@ -69,6 +75,8 @@ export const AdapterInfo = z.object({
   /** Human-readable reason, e.g. "ANTHROPIC_API_KEY not set on worker". Never a secret. */
   detail: z.string().max(500),
   version: z.string().max(100).optional(),
+  provider: z.string().max(50).optional(),
+  model: z.string().max(200).optional(),
 });
 export type AdapterInfo = z.infer<typeof AdapterInfo>;
 
@@ -93,6 +101,8 @@ export const SessionEventType = z.enum([
   "merge.requested",
   "merge.completed",
   "merge.failed",
+  "checks.started",
+  "checks.completed",
   "system.notice",
 ]);
 export type SessionEventType = z.infer<typeof SessionEventType>;

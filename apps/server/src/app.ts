@@ -40,9 +40,10 @@ export async function buildApp(
     trustProxy: process.env.TRUST_PROXY === "true",
   });
   const core = new Core(db);
-  const hub = new Hub(core);
+  const hub = new Hub(core, config.heartbeatMs);
   core.notifier = hub;
   const auth = new AuthService(db, config);
+  core.reconcileOnStartup();
 
   await fastify.register(cookie);
   await fastify.register(websocket, { options: { maxPayload: 2 * 1024 * 1024 } });
@@ -263,6 +264,11 @@ export async function buildApp(
   fastify.post("/api/sessions/:id/resume", async (req) =>
     core.resumeSession(user(req).id, param(req, "id")),
   );
+
+  fastify.post("/api/sessions/:id/checks", async (req) => {
+    core.runChecks(user(req).id, param(req, "id"));
+    return { ok: true };
+  });
 
   fastify.post("/api/sessions/:id/changes/refresh", async (req) => {
     core.refreshChanges(user(req).id, param(req, "id"));

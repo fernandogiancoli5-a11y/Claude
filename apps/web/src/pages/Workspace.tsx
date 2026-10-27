@@ -12,7 +12,7 @@ export function WorkspacePage({ id, me }: { id: string; me: Me }) {
     expiresAt: string;
   } | null>(null);
   const [role, setRole] = useState("collaborator");
-  const [projectName, setProjectName] = useState("Rogue");
+  const [projectName, setProjectName] = useState("tiny-cart");
   const [branch, setBranch] = useState("main");
   const [repoUrl, setRepoUrl] = useState("");
 

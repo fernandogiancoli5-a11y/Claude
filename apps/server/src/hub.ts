@@ -23,14 +23,48 @@ interface ClientConn {
 export class Hub implements Notifier {
   private clients = new Set<ClientConn>();
   private workers = new Map<string, WebSocket>();
+  private alive = new WeakMap<WebSocket, boolean>();
+  private heartbeat: NodeJS.Timeout;
 
-  constructor(private core: Core) {}
+  /**
+   * Server-side liveness: every socket must answer a WebSocket ping within one
+   * interval, or it is terminated. Without this a worker that vanished without
+   * closing its TCP connection (VM died, network partition) would look online
+   * and its sessions would look like they are still running.
+   */
+  constructor(
+    private core: Core,
+    heartbeatMs = 20_000,
+  ) {
+    this.heartbeat = setInterval(() => this.sweep(), heartbeatMs);
+    this.heartbeat.unref();
+  }
+
+  private track(socket: WebSocket) {
+    this.alive.set(socket, true);
+    socket.on("pong", () => this.alive.set(socket, true));
+  }
+
+  private sweep() {
+    const sockets = [...[...this.clients].map((c) => c.socket), ...this.workers.values()];
+    for (const s of sockets) {
+      if (this.alive.get(s) === false) {
+        s.terminate(); // triggers "close" -> normal disconnect handling
+        continue;
+      }
+      this.alive.set(s, false);
+      try {
+        s.ping();
+      } catch {}
+    }
+  }
 
   // ------------------------------------------------------------ browsers
 
   attachClient(socket: WebSocket, userId: string) {
     const conn: ClientConn = { socket, userId, sessions: new Map(), projects: new Map() };
     this.clients.add(conn);
+    this.track(socket);
     socket.on("message", (raw) => this.onClientMessage(conn, raw.toString()));
     socket.on("close", () => this.clients.delete(conn));
   }
@@ -140,6 +174,7 @@ export class Hub implements Notifier {
   attachWorker(socket: WebSocket, workerId: string, projectId: string) {
     const previous = this.workers.get(workerId);
     if (previous && previous !== socket) previous.close(4000, "Replaced by a newer connection");
+    this.track(socket);
     let helloDone = false;
 
     socket.on("message", (raw) => {
@@ -198,6 +233,7 @@ export class Hub implements Notifier {
   }
 
   closeAll() {
+    clearInterval(this.heartbeat);
     for (const c of this.clients) c.socket.close();
     for (const w of this.workers.values()) w.close();
   }

@@ -108,6 +108,8 @@ const WORKER_EVENT_TYPES = new Set<SessionEventType>([
   "changes.updated",
   "merge.completed",
   "merge.failed",
+  "checks.started",
+  "checks.completed",
   "system.notice",
 ]);
 
@@ -547,8 +549,10 @@ export class Core {
     if (!w || w.project_id !== projectId) throw new HttpError(400, "Worker not in this project");
     if (w.revoked_at) throw new HttpError(409, "Worker is revoked");
     const adapters = JSON.parse(w.adapters_json) as AdapterInfo[];
-    const wanted = input.executionMode === "real" ? "claude-agent-sdk" : "simulated";
-    const adapter = adapters.find((a) => a.kind === wanted);
+    const adapter =
+      input.executionMode === "simulated"
+        ? adapters.find((a) => a.kind === "simulated")
+        : adapters.find((a) => a.kind !== "simulated");
     // Unknown adapter state (worker never connected) is allowed: the start command
     // will fail truthfully on the worker if the adapter is unavailable.
     if (adapter && !adapter.available) {
@@ -971,6 +975,16 @@ export class Core {
       }
       case "changes.updated": {
         const p = payload as ChangesUpdatedPayload;
+        // Same commit as the newest change set (e.g. re-sent after a worker restart):
+        // nothing changed, and superseding it would orphan its reviews or an in-flight merge.
+        const latest = this.db
+          .prepare(
+            `SELECT base_commit, head_commit FROM change_sets WHERE session_id = ?
+             ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+          )
+          .get(s.id) as { base_commit: string; head_commit: string } | undefined;
+        if (latest && latest.head_commit === p.headCommit && latest.base_commit === p.baseCommit)
+          return;
         tx(this.db, () => {
           this.db
             .prepare(
@@ -1218,6 +1232,39 @@ export class Core {
       branchName: session.branch_name,
       baseBranch: session.base_branch,
     });
+  }
+
+  /** Runs the project's configured test command in the session's worktree on the worker. */
+  runChecks(userId: string, sessionId: string) {
+    const { session } = this.requireSession(userId, sessionId, "collaborator");
+    this.enqueueCommand(sessionId, {
+      kind: "run_checks",
+      branchName: session.branch_name,
+      baseBranch: session.base_branch,
+    });
+  }
+
+  /**
+   * Called once at server start. No worker is connected yet, so nothing can be
+   * known to be live: mark live sessions disconnected until their worker says otherwise.
+   */
+  reconcileOnStartup() {
+    const rows = this.db.prepare(`SELECT id, status FROM agent_sessions`).all() as Array<{
+      id: string;
+      status: SessionStatus;
+    }>;
+    let n = 0;
+    for (const s of rows) {
+      if (LIVE_STATUSES.includes(s.status)) {
+        this.systemStatus(
+          s.id,
+          "disconnected",
+          "Server restarted; waiting for the worker to reconnect and report this session.",
+        );
+        n++;
+      }
+    }
+    return n;
   }
 
   // -------------------------------------------------------------- reviews

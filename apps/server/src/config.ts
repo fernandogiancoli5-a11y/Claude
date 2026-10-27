@@ -21,6 +21,8 @@ export interface ServerConfig {
   openSignup: boolean;
   /** Directory with the built web app to serve, if any. */
   webDistDir: string | null;
+  /** Interval for server-side WebSocket liveness pings; a socket missing one is dropped. */
+  heartbeatMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -43,5 +45,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     inviteTtlHours: Number(env.INVITE_TTL_HOURS ?? 72),
     openSignup: env.OPEN_SIGNUP !== "false",
     webDistDir: env.WEB_DIST_DIR ? fromRoot(env.WEB_DIST_DIR) : null,
+    heartbeatMs: Number(env.WS_HEARTBEAT_MS ?? 20_000),
   };
 }

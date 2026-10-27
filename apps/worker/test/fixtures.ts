@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.js";
 
-/** A throwaway repo standing in for Rogue: one commit on `main`. */
+/** A throwaway repo for tests: one commit on `main`. */
 export function makeRepo() {
   const root = mkdtempSync(join(tmpdir(), "pairloom-test-"));
   const repo = join(root, "repo");
@@ -14,7 +14,7 @@ export function makeRepo() {
   g("config", "user.email", "dev@example.com");
   g("config", "user.name", "Dev");
   g("config", "commit.gpgsign", "false");
-  writeFileSync(join(repo, "README.md"), "# Rogue\n");
+  writeFileSync(join(repo, "README.md"), "# sample\n");
   g("add", "-A");
   g("commit", "-q", "-m", "initial");
   return { root, repo, worktrees: join(root, "worktrees"), state: join(root, "state"), g };

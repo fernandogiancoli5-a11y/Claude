@@ -301,3 +301,66 @@ describe("browser realtime", () => {
     expect(await browser(owner.cookie, "https://evil.example").closed).toBe(4003);
   });
 });
+
+describe("liveness and restart reconciliation", () => {
+  it("terminates a worker socket that stops answering pings and marks its sessions disconnected", async () => {
+    await app.close();
+    app = await makeApp({ heartbeatMs: 100 });
+    const { owner, sessionId, workerToken } = await startSession();
+    const w = await connect(workerToken);
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "running" },
+    });
+    await tick();
+    // Half-open connection: the process is gone but no FIN arrived, so pings go unanswered.
+    (w.socket as any)._socket.pause();
+    await tick(400);
+    expect(await status(owner, sessionId)).toBe("disconnected");
+    w.socket.terminate();
+  });
+
+  it("on server start, sessions believed live become disconnected until their worker reports", async () => {
+    const { owner, sessionId, workerToken } = await startSession();
+    const w = await connect(workerToken);
+    w.send({
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "session.status",
+      payload: { status: "running" },
+    });
+    await tick();
+    expect(app.core.reconcileOnStartup()).toBe(1);
+    expect(await status(owner, sessionId)).toBe("disconnected");
+  });
+
+  it("ignores a re-sent change set with an unchanged head commit", async () => {
+    const { owner, sessionId, workerId } = await startSession();
+    const payload = {
+      baseCommit: "a".repeat(40),
+      headCommit: "b".repeat(40),
+      branchName: "pairloom/x",
+      files: [{ path: "a.js", insertions: 1, deletions: 0 }],
+      diff: "+x\n",
+      diffTruncated: false,
+    };
+    for (let i = 0; i < 2; i++) {
+      app.core.ingestWorkerEvent(workerId, {
+        t: "event",
+        id: randomUUID(),
+        sessionId,
+        type: "changes.updated",
+        payload,
+      });
+    }
+    const n = app.db.prepare("SELECT COUNT(*) AS n FROM change_sets").get() as { n: number };
+    expect(n.n).toBe(1);
+    expect((await owner.req("GET", `/api/sessions/${sessionId}`)).body.changeSet.status).toBe(
+      "open",
+    );
+  });
+});

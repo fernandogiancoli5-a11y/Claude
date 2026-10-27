@@ -58,8 +58,10 @@ export function ProjectPage({ id }: { id: string; me: Me }) {
               <ul className="adapters">
                 {w.adapters.map((a) => (
                   <li key={a.kind} className={a.available ? "" : "muted"}>
-                    {a.kind === "claude-agent-sdk" ? "Real agent (Claude Agent SDK)" : "Simulator"}:{" "}
-                    {a.available ? "available" : "unavailable"} — {a.detail}
+                    {a.kind === "simulated"
+                      ? "Simulator"
+                      : `Real agent (${a.kind === "llm-harness" ? `${a.provider ?? ""} ${a.model ?? ""}`.trim() : "Claude Agent SDK"})`}
+                    : {a.available ? "available" : "unavailable"} — {a.detail}
                   </li>
                 ))}
                 {w.adapters.length === 0 && <li className="muted">Never connected yet.</li>}
@@ -103,7 +105,7 @@ export function ProjectPage({ id }: { id: string; me: Me }) {
             <pre className="select">{`PAIRLOOM_SERVER_URL=${location.origin}
 PAIRLOOM_WORKER_TOKEN=${newToken.token}
 PAIRLOOM_REPO_PATH=/path/to/dedicated/clone/of/${project.name}
-ANTHROPIC_API_KEY=<your key, only for real agent sessions>
+GROQ_API_KEY=<your Groq key, only for real agent sessions>
 npm run dev:worker`}</pre>
             <button className="link" onClick={() => setNewToken(null)}>
               I've saved it
@@ -142,7 +144,7 @@ function NewSession({ project }: { project: any }) {
   const [policy, setPolicy] = useState("accept_edits_in_worktree");
   const [error, setError] = useState<string | null>(null);
   const worker = workers.find((w) => w.id === workerId);
-  const realAdapter = worker?.adapters.find((a) => a.kind === "claude-agent-sdk");
+  const realAdapter = worker?.adapters.find((a) => a.kind !== "simulated");
   const realUnavailable = realAdapter ? !realAdapter.available : false;
 
   useEffect(() => {
@@ -200,7 +202,9 @@ function NewSession({ project }: { project: any }) {
             Execution{" "}
             <select value={mode} onChange={(e) => setMode(e.target.value as "real" | "simulated")}>
               <option value="real" disabled={realUnavailable}>
-                Real Claude agent{realUnavailable ? " — unavailable on this worker" : ""}
+                Real AI agent
+                {realAdapter?.model ? ` (${realAdapter.provider} ${realAdapter.model})` : ""}
+                {realUnavailable ? " — unavailable on this worker" : ""}
               </option>
               <option value="simulated">SIMULATED (no AI, scripted demo)</option>
             </select>

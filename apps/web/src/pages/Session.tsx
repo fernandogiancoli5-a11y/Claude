@@ -68,6 +68,13 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
   const canInstruct = role !== "viewer";
   const ended = TERMINAL_STATUSES.includes(session.status);
   const simulated = session.executionMode === "simulated";
+  const initPayload = [...events].reverse().find((e) => e.type === "agent.init")?.payload as any;
+  const agentModel = initPayload?.model
+    ? `${initPayload.provider ? `${initPayload.provider} ` : ""}${initPayload.model}`
+    : null;
+  const lastChecks = [...events]
+    .reverse()
+    .find((e) => e.type === "checks.completed" || e.type === "checks.started");
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -90,7 +97,9 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
         </div>
       ) : (
         <div className="banner real">
-          Real Claude agent session (Claude Agent SDK) running on worker “{worker?.name}”.
+          Real AI agent session
+          {agentModel ? ` (${agentModel})` : ""} running on worker “{worker?.name}”. Its output is
+          unverified until the tests run and a human reviews the diff.
         </div>
       )}
       <div className="row wrap">
@@ -105,7 +114,7 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
         {session.providerSessionId && (
           <>
             {" "}
-            · Claude session <code>{session.providerSessionId}</code>
+            · agent session <code>{session.providerSessionId}</code>
           </>
         )}
       </p>
@@ -161,6 +170,7 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
         <div className="stack">
           <Approvals detail={detail} isOwner={isOwner} act={act} me={me} />
           <Changes
+            lastChecks={lastChecks}
             detail={detail}
             isOwner={isOwner}
             canReview={canInstruct}
@@ -212,7 +222,7 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "agent.init":
         return p.simulated
           ? "simulator ready (no model)"
-          : `agent ready · model ${p.model} · Claude Code ${p.claudeCodeVersion}`;
+          : `agent ready · ${p.provider ? `${p.provider} ` : ""}${p.model}${p.claudeCodeVersion ? ` · Claude Code ${p.claudeCodeVersion}` : ""}${p.resumed ? " · resumed from saved transcript" : ""}`;
       case "agent.text":
         return <div className="agent-text">{p.text ?? p.preview}</div>;
       case "agent.tool_use":
@@ -233,13 +243,32 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "agent.result":
         return (
           <span className={p.isError ? "error" : ""}>
-            turn ended: <b>{p.subtype}</b>
-            {p.isError ? " (error)" : ""}
-            {typeof p.totalCostUsd === "number" && !p.simulated
-              ? ` · $${p.totalCostUsd.toFixed(4)}`
+            {resultLabel(p.subtype)} <code>{p.subtype}</code>
+            {p.message ? ` — ${p.message}` : ""}
+            {p.lastTestRun
+              ? ` · agent's last test run: exit ${p.lastTestRun.exitCode}${p.lastTestRun.timedOut ? " (timed out)" : ""}`
               : ""}
-            {p.numTurns ? ` · ${p.numTurns} steps` : ""}
+            {typeof p.totalCostUsd === "number" && !p.simulated
+              ? ` · ≈$${p.totalCostUsd.toFixed(4)}${p.costIsEstimate ? " est." : ""}`
+              : ""}
+            {p.modelCallsThisTurn
+              ? ` · ${p.modelCallsThisTurn} model calls`
+              : p.numTurns
+                ? ` · ${p.numTurns} steps`
+                : ""}
           </span>
+        );
+      case "checks.started":
+        return `running project tests: ${(p.command ?? []).join(" ")}`;
+      case "checks.completed":
+        return (
+          <details>
+            <summary className={p.passed ? "" : "error"}>
+              project tests {p.passed ? "PASSED" : p.timedOut ? "TIMED OUT" : "FAILED"} (exit{" "}
+              {String(p.exitCode)})
+            </summary>
+            <pre>{p.output}</pre>
+          </details>
         );
       case "agent.error":
         return <span className="error">{p.message}</span>;
@@ -337,6 +366,7 @@ function Approvals({
   isOwner,
   act,
 }: {
+  lastChecks?: SessionEvent;
   detail: any;
   isOwner: boolean;
   act: (f: () => Promise<unknown>) => void;
@@ -412,12 +442,14 @@ function Approvals({
 }
 
 function Changes({
+  lastChecks,
   detail,
   isOwner,
   canReview,
   act,
   sessionId,
 }: {
+  lastChecks?: SessionEvent;
   detail: any;
   isOwner: boolean;
   canReview: boolean;
@@ -437,12 +469,31 @@ function Changes({
         {canReview && (
           <button
             className="link"
+            disabled={detail.session.status === "running" || lastChecks?.type === "checks.started"}
+            title="Run the project's configured test command on this branch, independent of the agent"
+            onClick={() => act(() => post(`/api/sessions/${sessionId}/checks`))}
+          >
+            run tests
+          </button>
+        )}
+        {canReview && (
+          <button
+            className="link"
             onClick={() => act(() => post(`/api/sessions/${sessionId}/changes/refresh`))}
           >
             refresh
           </button>
         )}
       </div>
+      {lastChecks && (
+        <p
+          className={`small ${lastChecks.type === "checks.completed" && !(lastChecks.payload as any).passed ? "error" : ""}`}
+        >
+          {lastChecks.type === "checks.started"
+            ? "Project tests running…"
+            : `Project tests ${(lastChecks.payload as any).passed ? "passed" : "FAILED"} at ${new Date(lastChecks.createdAt).toLocaleTimeString()} (run by Pairloom, not reported by the agent)`}
+        </p>
+      )}
       {!cs && (
         <p className="muted">No changes yet. The agent's edits appear here after each turn.</p>
       )}
@@ -580,4 +631,14 @@ function Diff({ text }: { text: string }) {
       })}
     </pre>
   );
+}
+
+function resultLabel(subtype: string): string {
+  if (subtype === "end_turn") return "agent finished its turn (unverified until tests and review):";
+  if (subtype === "success") return "turn ended:";
+  if (subtype === "interrupted") return "turn interrupted:";
+  if (subtype.startsWith("error_max") || subtype === "error_budget")
+    return "turn stopped by a limit:";
+  if (subtype.startsWith("error_provider")) return "turn failed (model provider error):";
+  return "turn failed:";
 }

@@ -7,8 +7,15 @@ import { openDb } from "../src/db.js";
 
 export const ORIGIN = "http://localhost:5173";
 
-export async function makeApp(): Promise<App & { url: string; close: () => Promise<void> }> {
-  const config = { ...loadConfig({}), databasePath: ":memory:", allowedOrigins: [ORIGIN] };
+export async function makeApp(
+  overrides: Partial<ReturnType<typeof loadConfig>> = {},
+): Promise<App & { url: string; close: () => Promise<void> }> {
+  const config = {
+    ...loadConfig({}),
+    databasePath: ":memory:",
+    allowedOrigins: [ORIGIN],
+    ...overrides,
+  };
   const app = await buildApp(config, openDb(":memory:"));
   await app.fastify.listen({ port: 0, host: "127.0.0.1" });
   const addr = app.fastify.server.address();
@@ -63,10 +70,10 @@ function safeJson(s: string) {
 /** Owner with a workspace, project and registered worker. */
 export async function seed(app: App) {
   const owner = await signup(app, "owner");
-  const ws = (await owner.req("POST", "/api/workspaces", { name: "Rogue team" })).body;
+  const ws = (await owner.req("POST", "/api/workspaces", { name: "Demo team" })).body;
   const project = (
     await owner.req("POST", `/api/workspaces/${ws.id}/projects`, {
-      name: "Rogue",
+      name: "tiny-cart",
       defaultBranch: "main",
     })
   ).body;

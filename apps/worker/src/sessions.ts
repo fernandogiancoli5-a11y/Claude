@@ -10,6 +10,8 @@ import {
 import type { Workspace } from "./git.js";
 import type { ServerLink } from "./link.js";
 import type { AgentAdapter, AgentRun, PermissionAnswer, PermissionAsk } from "./adapters/types.js";
+import { join } from "node:path";
+import { loadProjectSettings, runCommand } from "./harness/tools.js";
 
 interface LiveSession {
   id: string;
@@ -40,6 +42,8 @@ export class SessionManager {
     private link: Emitter,
     private workspace: Workspace,
     private adapters: Record<ExecutionMode, AgentAdapter>,
+    private stateDir: string = join(process.cwd(), "data", "worker-state"),
+    private checksTimeoutMs = 180_000,
   ) {}
 
   liveReports(): LiveSessionReport[] {
@@ -145,6 +149,33 @@ export class SessionManager {
           LIMITS.diffMaxBytes,
         );
         this.emit(sessionId, "changes.updated", { ...snap });
+        return;
+      }
+      case "run_checks": {
+        const s = this.sessions.get(sessionId);
+        if (s?.status === "running")
+          throw new Error("Agent is mid-turn; run checks when it is idle");
+        const wt = s
+          ? { path: s.worktreePath }
+          : await this.workspace.ensureWorktree(sessionId, command.branchName, command.baseBranch);
+        // The command comes from the base branch's .pairloom.json in the clone, not from the agent's edits.
+        const settings = loadProjectSettings(this.workspace.repoPath);
+        if (!settings.testCommand) throw new Error("No testCommand configured in .pairloom.json");
+        this.emit(sessionId, "checks.started", { command: settings.testCommand });
+        const r = await runCommand(settings.testCommand, {
+          cwd: wt.path,
+          timeoutMs: this.checksTimeoutMs,
+          signal: new AbortController().signal,
+          sandboxHome: join(this.stateDir, "sandbox-home"),
+        });
+        this.emit(sessionId, "checks.completed", {
+          command: settings.testCommand,
+          exitCode: r.exitCode,
+          passed: r.exitCode === 0 && !r.timedOut,
+          timedOut: r.timedOut,
+          durationMs: r.durationMs,
+          output: r.output.slice(-LIMITS.toolPayloadMaxChars),
+        });
         return;
       }
       case "merge": {

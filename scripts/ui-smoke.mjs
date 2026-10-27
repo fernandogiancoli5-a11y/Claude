@@ -69,7 +69,7 @@ try {
   step("server up");
 
   const repo = join(tmp, "repo");
-  execFileSync("bash", [join(root, "scripts/demo-repo.sh"), repo]);
+  execFileSync("bash", [join(root, "scripts/sample-repo.sh"), repo]);
 
   const browser = await chromium.launch();
   const ownerCtx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
@@ -84,7 +84,7 @@ try {
   await owner.getByLabel("Email").fill("ana@example.com");
   await owner.getByLabel(/Password/).fill("correct horse battery");
   await owner.getByRole("button", { name: "Create account" }).click();
-  await owner.getByPlaceholder("New workspace name").fill("Rogue team");
+  await owner.getByPlaceholder("New workspace name").fill("Demo team");
   await owner.getByRole("button", { name: "Create workspace" }).click();
   await owner.getByRole("button", { name: "Add project" }).click();
   await owner.getByRole("button", { name: "Register worker" }).click();
@@ -117,7 +117,7 @@ try {
   await collab.getByLabel("Email").fill("bea@example.com");
   await collab.getByLabel(/Password/).fill("another long password");
   await collab.getByRole("button", { name: "Create account" }).click();
-  await waitFor(() => collab.getByText("Rogue team").isVisible(), "collaborator joined");
+  await waitFor(() => collab.getByText("Demo team").isVisible(), "collaborator joined");
   step("collaborator joined through invite link");
 
   // Owner starts a SIMULATED session (no API key in this smoke test).
