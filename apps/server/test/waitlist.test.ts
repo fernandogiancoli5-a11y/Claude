@@ -74,6 +74,20 @@ describe("public waitlist", () => {
     ).toBe(200);
   });
 
+  it("counts an IPv6 /64 as one client so addresses inside it can't rotate past the limit", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i++)
+      statuses.push(
+        (await join_({ email: `v6-${i}@example.com`, elapsedMs: 4000 }, `2001:db8:1:2::${i + 1}`))
+          .statusCode,
+      );
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 429]);
+    expect(
+      (await join_({ email: "v6-other@example.com", elapsedMs: 4000 }, "2001:db8:1:3::1"))
+        .statusCode,
+    ).toBe(200);
+  });
+
   it("refuses cross-site posts and never exposes the list", async () => {
     const res = await app.fastify.inject({
       method: "POST",

@@ -61,5 +61,8 @@ services:
       # BUILD time, so redeploy after changing it.
       - key: PAIRLOOM_CONTACT_EMAIL
         sync: false
+      # The site's "Sign in" link points at the app this service serves under /app/.
+      - key: PAIRLOOM_APP_URL
+        value: /app/
       - key: LOG_LEVEL
         value: info

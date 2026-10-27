@@ -16,7 +16,8 @@ describe("validateEmail", () => {
 
 describe("submitWaitlist", () => {
   const input = { email: " Ada@Example.com ", role: "engineer", website: "", elapsedMs: 3000 };
-  const reply = (status: number) => (async () => new Response("{}", { status })) as typeof fetch;
+  const reply = (status: number) =>
+    (async () => new Response(status === 200 ? '{"ok":true}' : "{}", { status })) as typeof fetch;
 
   it("posts the trimmed address with the spam-check fields", async () => {
     let sent: any;
@@ -31,6 +32,22 @@ describe("submitWaitlist", () => {
       website: "",
       elapsedMs: 3000,
     });
+  });
+
+  it("never reports success unless the endpoint itself confirms it", async () => {
+    const body200 = (body: string, type = "text/html") =>
+      (async () =>
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": type },
+        })) as unknown as typeof fetch;
+    for (const f of [
+      body200("<!doctype html><title>Pairloom</title>"), // e.g. an HTML fallback page
+      body200(""),
+      body200('{"ok":false}', "application/json"),
+      body200('{"status":"ok"}', "application/json"),
+    ])
+      expect(await submitWaitlist(input, f)).toMatchObject({ ok: false, message: /our side/ });
   });
 
   it("maps failures to actionable messages", async () => {

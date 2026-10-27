@@ -11,7 +11,8 @@ import { AuthService, SESSION_COOKIE } from "./auth.js";
 import { Core, HttpError } from "./core.js";
 import { type Db, openDb } from "./db.js";
 import { Hub } from "./hub.js";
-import { RateLimiter, Waitlist, WaitlistInput } from "./waitlist.js";
+import { rateLimitKey, WAITLIST_RATE_LIMIT, WaitlistInput } from "@pairloom/shared/waitlist";
+import { RateLimiter, Waitlist } from "./waitlist.js";
 
 export interface App {
   fastify: FastifyInstance;
@@ -42,7 +43,7 @@ export async function buildApp(
   });
   const core = new Core(db);
   const waitlist = new Waitlist(db);
-  const waitlistLimiter = new RateLimiter(5, 10 * 60_000);
+  const waitlistLimiter = new RateLimiter(WAITLIST_RATE_LIMIT.max, WAITLIST_RATE_LIMIT.windowMs);
   const hub = new Hub(core, config.heartbeatMs);
   core.notifier = hub;
   const auth = new AuthService(db, config);
@@ -304,7 +305,8 @@ export async function buildApp(
 
   // Unauthenticated, so it gets its own per-IP limit on top of the honeypot checks.
   fastify.post("/api/waitlist", async (req, reply) => {
-    if (!waitlistLimiter.allow(req.ip)) {
+    // IPv6 counts per /64 (a client controls the whole prefix); see rateLimitKey.
+    if (!waitlistLimiter.allow(rateLimitKey(req.ip) ?? req.ip)) {
       return reply
         .status(429)
         .send({ error: "Too many attempts. Please try again in a few minutes." });

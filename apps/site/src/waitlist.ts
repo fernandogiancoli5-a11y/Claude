@@ -35,7 +35,16 @@ export async function submitWaitlist(
       message: "We couldn't reach the server. Check your connection and try again.",
     };
   }
-  if (res.ok) return { ok: true };
+  if (res.ok) {
+    // Only the waitlist endpoint's own confirmation counts. A 200 from anything else (an HTML
+    // fallback page, a proxy, a misrouted request) must never tell someone they're signed up.
+    const body = await res.json().catch(() => null);
+    if (body && body.ok === true) return { ok: true };
+    return {
+      ok: false,
+      message: "Something went wrong on our side. Please try again in a moment.",
+    };
+  }
   if (res.status === 429)
     return {
       ok: false,

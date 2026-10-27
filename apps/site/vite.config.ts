@@ -26,8 +26,54 @@ function contactEmail(): Plugin {
   };
 }
 
+/**
+ * Where waitlist signups are stored differs by deployment, and the privacy page must describe
+ * the one actually in use. PAIRLOOM_WAITLIST_BACKEND=server (default: the Pairloom server's
+ * SQLite database) or supabase (the Netlify function; see docs/DEPLOY_FREE.md).
+ */
+const STORAGE_TEXT = {
+  server: `<p>
+          That's all. We don't store your IP address, browser details or any tracking identifiers
+          with your signup, and this site loads no analytics, advertising or third-party scripts.
+          Your IP address is held briefly in server memory to limit repeated attempts, and is never
+          written to the database.
+        </p>`,
+  supabase: `<p>
+          That's all for your signup. This site loads no analytics, advertising or third-party
+          scripts, and we don't store your IP address or browser details with your signup.
+        </p>
+        <p>
+          To stop automated abuse, each attempt to join records a <strong>salted one-way hash</strong>
+          of your IP address (for IPv6, of its network prefix) — not the address itself — so we can
+          limit repeated attempts (5 per 10 minutes). These hashes are kept separately from signups and deleted after
+          <strong>one hour</strong>.
+        </p>
+        <p>
+          The site is hosted by Netlify, which handles your request, and signups are stored in a
+          database run by Supabase.
+        </p>`,
+} as const;
+
+function deploymentText(): Plugin {
+  const backend = (process.env.PAIRLOOM_WAITLIST_BACKEND ?? "server").trim();
+  if (backend !== "server" && backend !== "supabase")
+    throw new Error(`PAIRLOOM_WAITLIST_BACKEND must be "server" or "supabase", not "${backend}"`);
+  // Only link to the app when one is actually deployed at a known address.
+  const appUrl = process.env.PAIRLOOM_APP_URL?.trim();
+  if (appUrl && !/^(https:\/\/[^\s"<>]+|\/[^\s"<>]*)$/.test(appUrl))
+    throw new Error("PAIRLOOM_APP_URL must be an https:// URL or a path such as /app/");
+  return {
+    name: "pairloom-deployment-text",
+    transformIndexHtml(html) {
+      return html
+        .replaceAll("<!--WAITLIST_STORAGE-->", STORAGE_TEXT[backend])
+        .replaceAll("<!--APP_SIGNIN-->", appUrl ? `<a href="${appUrl}">Sign in</a>` : "");
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [contactEmail()],
+  plugins: [contactEmail(), deploymentText()],
   server: {
     port: 5174,
     // The waitlist endpoint lives on the Pairloom server.

@@ -1,20 +1,8 @@
-import { z } from "zod";
+import { isLikelySpam, type WaitlistInput } from "@pairloom/shared/waitlist";
 import { newId } from "./crypto.js";
 import { type Db, nowIso } from "./db.js";
 
-export const WAITLIST_ROLES = ["engineer", "founder", "product", "student", "other"] as const;
-
-export const WaitlistInput = z.object({
-  email: z.string().trim().toLowerCase().email().max(254),
-  role: z.enum(WAITLIST_ROLES).optional(),
-  /** Honeypot: hidden from people, filled in by naive bots. */
-  website: z.string().max(500).optional(),
-  /** Milliseconds between the form rendering and submit; bots submit instantly. */
-  elapsedMs: z.number().int().nonnegative().optional(),
-});
-
-/** Faster than a person can type an email address. */
-export const MIN_FILL_MS = 1500;
+export { MIN_FILL_MS, WAITLIST_ROLES, WaitlistInput } from "@pairloom/shared/waitlist";
 
 export type WaitlistOutcome = "joined" | "already" | "dropped";
 
@@ -26,11 +14,8 @@ export type WaitlistOutcome = "joined" | "already" | "dropped";
 export class Waitlist {
   constructor(private db: Db) {}
 
-  join(input: z.infer<typeof WaitlistInput>): WaitlistOutcome {
-    // Spam signals are accepted silently: telling a bot it was caught only teaches it.
-    if (input.website || (input.elapsedMs !== undefined && input.elapsedMs < MIN_FILL_MS)) {
-      return "dropped";
-    }
+  join(input: WaitlistInput): WaitlistOutcome {
+    if (isLikelySpam(input)) return "dropped";
     const r = this.db
       .prepare(
         "INSERT INTO waitlist (id, email, role, created_at) VALUES (?,?,?,?) ON CONFLICT(email) DO NOTHING",
