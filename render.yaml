@@ -1,0 +1,68 @@
+# Render Blueprint for the Pairloom server: public site at "/", web app at "/app/", API and
+# WebSockets on the same origin. See docs/DEPLOY_RENDER.md before creating it.
+#
+# No secret values live in this file. Variables marked `sync: false` are entered privately in the
+# Render Dashboard when the Blueprint is first created (and changed there later).
+services:
+  - type: web
+    name: pairloom
+    runtime: node
+    # 0.5 CPU / 512 MB. A paid instance is required: free instances cannot attach a disk, and the
+    # SQLite database (accounts, tasks, waitlist) must live on one.
+    plan: 0.5c-512mb
+    region: oregon
+    # A disk pins the service to one instance; SQLite is single-writer anyway.
+    numInstances: 1
+    # Build time: NODE_ENV is not "production" here, so npm ci installs devDependencies
+    # (tsx runs the server; vite builds both front ends). The disk is NOT mounted during builds.
+    buildCommand: npm ci && npm run build
+    # One Node process (tsx as a loader), not `npm start`: npm exits on SIGTERM without passing
+    # it on, which would leave the server running until Render's SIGKILL instead of closing
+    # sockets and the database cleanly.
+    startCommand: node --import tsx apps/server/src/index.ts
+    healthCheckPath: /api/health
+    # Deploy only when you choose to; change to `commit` once you trust the pipeline.
+    autoDeployTrigger: "off"
+    disk:
+      name: pairloom-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      # Node version is pinned by .node-version (22.22.0); this keeps the two in agreement.
+      - key: NODE_VERSION
+        value: 22.22.0
+      # Render routes public traffic to $PORT (default 10000) and requires binding 0.0.0.0.
+      - key: PORT
+        value: "10000"
+      - key: HOST
+        value: 0.0.0.0
+      # Must be the exact public URL people open (https://<service>.onrender.com or your custom
+      # domain, no trailing slash). Used for invite links, Secure cookies and the Origin check
+      # on API calls and WebSockets. Entered at creation because the final hostname is only known
+      # then.
+      - key: PUBLIC_ORIGIN
+        sync: false
+      # Only files under the disk mount survive deploys and restarts.
+      - key: DATABASE_PATH
+        value: /var/data/pairloom.sqlite
+      - key: WEB_DIST_DIR
+        value: ./apps/web/dist
+      - key: SITE_DIST_DIR
+        value: ./apps/site/dist
+      # Render's proxy terminates TLS and sets X-Forwarded-*; needed so per-IP rate limits see
+      # clients rather than the proxy. Verify after deploying (docs/DEPLOY_RENDER.md).
+      - key: TRUST_PROXY
+        value: "true"
+      # Start "true" only long enough to create the first owner account, then set "false" so new
+      # accounts require an invitation. The public waitlist is unaffected.
+      - key: OPEN_SIGNUP
+        value: "true"
+      # Shown on the privacy page as the contact for access/deletion requests. Required; read at
+      # BUILD time, so redeploy after changing it.
+      - key: PAIRLOOM_CONTACT_EMAIL
+        sync: false
+      # The site's "Sign in" link points at the app this service serves under /app/.
+      - key: PAIRLOOM_APP_URL
+        value: /app/
+      - key: LOG_LEVEL
+        value: info

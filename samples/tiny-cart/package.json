@@ -1,0 +1,11 @@
+{
+  "name": "tiny-cart",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Disposable sample app for Pairloom demos and tests. No dependencies.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "CC0-1.0"
+}

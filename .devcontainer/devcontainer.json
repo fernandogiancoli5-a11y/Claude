@@ -1,0 +1,14 @@
+// GitHub Codespaces preview of Pairloom: opens the app in your browser, private to your GitHub
+// account. Builds once on creation, then starts the server each time you open the codespace.
+// For real AI tasks add a Codespaces secret named GROQ_API_KEY (repo Settings → Secrets and
+// variables → Codespaces). Hosted workers never run project code (see .env.example).
+{
+  "name": "Pairloom preview",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "postCreateCommand": "npm ci && npm run build",
+  "postAttachCommand": "bash .devcontainer/start.sh",
+  "forwardPorts": [8787],
+  "portsAttributes": {
+    "8787": { "label": "Pairloom", "onAutoForward": "openBrowser" }
+  }
+}

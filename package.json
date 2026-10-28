@@ -1,0 +1,43 @@
+{
+  "name": "pairloom",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Multiplayer AI coding workspace: collaborate around a Claude agent session.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "npm run dev -w @pairloom/server",
+    "dev:web": "npm run dev -w @pairloom/web",
+    "dev:worker": "npm run dev -w @pairloom/worker",
+    "build": "npm run build -w @pairloom/web && npm run build -w @pairloom/site",
+    "start": "npm run start -w @pairloom/server",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p netlify/tsconfig.json",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run test && npm run format:check",
+    "smoke:ui": "npm run build && node scripts/ui-smoke.mjs",
+    "sample:repo": "bash scripts/sample-repo.sh",
+    "test:real": "vitest run --config vitest.real.config.ts",
+    "smoke:agent": "npm run build && node scripts/agent-scenario.mjs",
+    "dev:site": "npm run dev -w @pairloom/site",
+    "smoke:site": "npm run build && node scripts/site-smoke.mjs",
+    "waitlist:export": "node scripts/waitlist-export.mjs",
+    "test:sql": "bash scripts/test-supabase-sql.sh",
+    "smoke:hosted": "npm run build && node scripts/hosted-smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prettier": "^3.3.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
