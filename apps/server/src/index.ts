@@ -2,7 +2,7 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
-const { fastify } = await buildApp(config);
+const { fastify, hosted } = await buildApp(config);
 
 const shutdown = async (signal: string) => {
   fastify.log.info({ signal }, "shutting down");
@@ -13,3 +13,5 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 await fastify.listen({ port: config.port, host: config.host });
+// Hosted workers connect back over loopback with the normal worker protocol.
+hosted?.start(`http://127.0.0.1:${config.port}`);

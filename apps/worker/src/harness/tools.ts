@@ -9,11 +9,24 @@ import {
   statSync,
 } from "node:fs";
 import { readFile, unlink, writeFile, mkdir } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PermissionPolicy } from "@pairloom/shared";
 import type { ToolSchema } from "./provider.js";
 
 export class ToolError extends Error {}
+
+/**
+ * Whether this worker may execute project code (tests and commands). Pairloom-hosted workers run
+ * with PAIRLOOM_CODE_EXECUTION=disabled: nothing isolates such code from the server (same OS user,
+ * same filesystem, other processes' environments), so it must not run there. A worker on a
+ * team's own machine runs code as before.
+ */
+export function codeExecutionAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAIRLOOM_CODE_EXECUTION !== "disabled";
+}
+export const CODE_EXECUTION_DISABLED =
+  "Running code (tests or commands) is disabled on this Pairloom server, because it can't be isolated from the server. Review the diff, or run the tests on your own machine.";
 
 export const LIMITS = {
   readMaxBytes: 64 * 1024,
@@ -154,7 +167,7 @@ export class Sandbox {
     if (PROTECTED_WRITE.some((r) => r.test(rel))) throw new ToolError(`${rel} is protected`);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, content);
-    return `Wrote ${rel} (${Buffer.byteLength(content)} bytes)`;
+    return `Wrote ${rel} (${Buffer.byteLength(content)} bytes)${syntaxWarning(rel, content)}`;
   }
 
   async editFile(p: string, oldString: string, newString: string) {
@@ -167,13 +180,28 @@ export class Sandbox {
     const text = await readFile(abs, "utf8");
     const count = text.split(oldString).length - 1;
     if (count === 0) throw new ToolError(`old_string not found in ${rel}`);
-    if (count > 1)
-      throw new ToolError(`old_string matches ${count} times in ${rel}; make it unique`);
-    await writeFile(
-      abs,
-      text.replace(oldString, () => newString),
-    );
-    return `Edited ${rel}`;
+    if (count > 1) {
+      // Say where, so the model can widen old_string instead of re-reading the file.
+      const lines: number[] = [];
+      for (let i = text.indexOf(oldString); i !== -1; i = text.indexOf(oldString, i + 1))
+        lines.push(text.slice(0, i).split("\n").length);
+      throw new ToolError(
+        `old_string matches ${count} times in ${rel} (starting at lines ${lines.join(", ")}); ` +
+          "include enough surrounding lines to make it unique",
+      );
+    }
+    const next = text.replace(oldString, () => newString);
+    await writeFile(abs, next);
+    // Show the result around the edit so the model needn't re-read the file to check it.
+    const lines = next.split("\n");
+    const first = text.slice(0, text.indexOf(oldString)).split("\n").length - 1;
+    const from = Math.max(0, first - 2);
+    const to = Math.min(lines.length, first + newString.split("\n").length + 2);
+    const excerpt = lines
+      .slice(from, to)
+      .map((l, i) => `${String(from + i + 1).padStart(4)}| ${l}`)
+      .join("\n");
+    return `Edited ${rel}. Lines ${from + 1}-${to} now read:\n${excerpt.slice(0, 4000)}${syntaxWarning(rel, next)}`;
   }
 
   async deleteFile(p: string) {
@@ -280,6 +308,8 @@ export function runCommand(
   argv: string[],
   opts: { cwd: string; timeoutMs: number; signal: AbortSignal; sandboxHome: string },
 ): Promise<CommandResult> {
+  // Last line of defence: whatever the caller, no code runs where execution is disabled.
+  if (!codeExecutionAllowed()) return Promise.reject(new ToolError(CODE_EXECUTION_DISABLED));
   assertCommandAllowed(argv);
   mkdirSync(opts.sandboxHome, { recursive: true });
   const env: Record<string, string> = {
@@ -424,8 +454,8 @@ export function toolSchemas(settings: ProjectSettings): ToolSchema[] {
           type: "object",
           properties: {
             path: str("File path relative to the project root"),
-            offset: { type: "integer", description: "0-based first line" },
-            limit: { type: "integer", description: "Number of lines" },
+            offset: { type: "integer", description: "0-based first line (default 0)" },
+            limit: { type: "integer", description: "Number of lines (default: whole file)" },
           },
           required: ["path"],
         },
@@ -518,4 +548,44 @@ export function toolSchemas(settings: ProjectSettings): ToolSchema[] {
     });
   }
   return tools;
+}
+
+const requireHere = createRequire(import.meta.url);
+let tsParser: typeof import("typescript") | null | undefined;
+
+/**
+ * Parses (never runs) an edited JS/TS/JSON file and returns a warning to append to the tool
+ * result if it no longer parses, so the model fixes a broken edit while it still can. Hosted
+ * workers can't run code or tests, so this is often the only check before review.
+ * Skipped silently when the TypeScript parser isn't installed.
+ */
+export function syntaxWarning(rel: string, text: string): string {
+  const ext = extname(rel).toLowerCase();
+  if (ext === ".json") {
+    try {
+      JSON.parse(text);
+      return "";
+    } catch (e) {
+      return `\nWARNING: ${rel} is no longer valid JSON (${(e as Error).message}). Fix it before finishing.`;
+    }
+  }
+  if (![".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"].includes(ext)) return "";
+  if (tsParser === undefined) {
+    try {
+      tsParser = requireHere("typescript");
+    } catch {
+      tsParser = null;
+    }
+  }
+  if (!tsParser) return "";
+  const out = tsParser.transpileModule(text, {
+    fileName: rel,
+    reportDiagnostics: true,
+    compilerOptions: { allowJs: true, jsx: tsParser.JsxEmit.Preserve },
+  });
+  const d = out.diagnostics?.find((x) => x.category === tsParser!.DiagnosticCategory.Error);
+  if (!d) return "";
+  const line = d.start === undefined ? "?" : text.slice(0, d.start).split("\n").length;
+  const msg = tsParser.flattenDiagnosticMessageText(d.messageText, " ");
+  return `\nWARNING: ${rel} no longer parses (line ${line}: ${msg}). The edit probably went in the wrong place; fix it before finishing.`;
 }

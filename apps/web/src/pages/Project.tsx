@@ -14,15 +14,26 @@ import {
   useCrumbs,
   useDialog,
 } from "../ui.js";
-import { ModeBadge, RoleBadge, StatusBadge, WorkerBadge } from "./badges.js";
+import {
+  modelLabel,
+  ModeBadge,
+  OutcomeBadge,
+  RoleBadge,
+  StatusBadge,
+  WorkerBadge,
+} from "./badges.js";
+import { FileBrowser } from "./Files.js";
 import type { Me } from "../App.js";
 
-type Tab = "tasks" | "team" | "setup";
+type Tab = "tasks" | "files" | "team" | "setup";
 
-export function ProjectPage({ id }: { id: string; me: Me }) {
+const TABS: Tab[] = ["tasks", "files", "team", "setup"];
+
+export function ProjectPage({ id, routeTab }: { id: string; me: Me; routeTab?: string }) {
   const [project, setProject] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab | null>(null);
+  const [filesVersion, setFilesVersion] = useState(0);
 
   const load = () => get(`/api/projects/${id}`).then(setProject, (e) => setError(e.message));
   useEffect(() => {
@@ -64,13 +75,15 @@ export function ProjectPage({ id }: { id: string; me: Me }) {
   if (!project) return <Loading />;
   const isOwner = project.role === "owner";
   const activeWorkers = project.workers.filter((w: WorkerDTO) => !w.revoked);
-  const current: Tab = tab ?? "tasks";
+  // The tab lives in the URL (#/p/<id>/<tab>) so Back, reloads and shared links keep it.
+  const urlTab = TABS.includes(routeTab as Tab) ? (routeTab as Tab) : null;
+  const current: Tab = urlTab ?? tab ?? "tasks";
+  const selectTab = (t: Tab) => navigate(`/p/${id}/${t}`);
 
   return (
     <div className="stack">
       <div className="page-head">
         <div className="title">
-          <span className="eyebrow">Project</span>
           <h1>{project.name}</h1>
           <p className="muted small">
             Team <a href={`#/w/${project.workspaceId}`}>{project.workspaceName}</a> · base branch{" "}
@@ -88,12 +101,13 @@ export function ProjectPage({ id }: { id: string; me: Me }) {
         {(
           [
             ["tasks", "Tasks", project.sessions.length],
+            ...(project.hosted ? ([["files", "Files", null]] as const) : []),
             ["team", "Team", project.members.length],
-            ["setup", "Workers", activeWorkers.length],
+            ["setup", project.hosted ? "Workspace" : "Workers", activeWorkers.length],
           ] as const
         ).map(([t, label, n]) => (
-          <button key={t} role="tab" aria-selected={current === t} onClick={() => setTab(t)}>
-            {label} <span className="count">{n}</span>
+          <button key={t} role="tab" aria-selected={current === t} onClick={() => selectTab(t)}>
+            {label} {n !== null && <span className="count">{n}</span>}
           </button>
         ))}
       </div>
@@ -102,6 +116,7 @@ export function ProjectPage({ id }: { id: string; me: Me }) {
         <div className="split">
           <TaskList sessions={project.sessions} />
           <div className="stack">
+            {project.hosted && <HostedStatus project={project} />}
             {isOwner ? (
               activeWorkers.length ? (
                 <NewTask project={project} />
@@ -111,7 +126,7 @@ export function ProjectPage({ id }: { id: string; me: Me }) {
                   <p className="muted small">
                     Tasks run on a worker next to a clone of the repository.
                   </p>
-                  <button onClick={() => setTab("setup")}>Set up a worker</button>
+                  <button onClick={() => selectTab("setup")}>Set up a worker</button>
                 </div>
               )
             ) : (
@@ -128,6 +143,20 @@ export function ProjectPage({ id }: { id: string; me: Me }) {
         </div>
       )}
 
+      {current === "files" && (
+        <section className="card flush">
+          <div className="card-head">
+            <h3 className="grow">Files</h3>
+            <a className="button small" href={`/api/projects/${id}/archive`} download>
+              Download project
+            </a>
+            <button className="small" onClick={() => setFilesVersion((v) => v + 1)}>
+              Refresh
+            </button>
+          </div>
+          <FileBrowser projectId={id} version={filesVersion} />
+        </section>
+      )}
       {current === "team" && <TeamTab project={project} />}
       {current === "setup" && <Workers project={project} isOwner={isOwner} reload={load} />}
     </div>
@@ -156,6 +185,7 @@ function TaskList({ sessions }: { sessions: AgentSessionDTO[] }) {
                 </span>
               </div>
               {s.executionMode === "simulated" && <ModeBadge mode={s.executionMode} />}
+              <OutcomeBadge outcome={s.lastOutcome} />
               <StatusBadge status={s.status} short />
             </a>
           ))}
@@ -239,7 +269,7 @@ function NewTask({ project }: { project: any }) {
         <select value={mode} onChange={(e) => setMode(e.target.value as "real" | "simulated")}>
           <option value="real" disabled={realUnavailable}>
             Real AI agent
-            {realAdapter?.model ? ` (${realAdapter.provider} ${realAdapter.model})` : ""}
+            {realAdapter?.model ? ` (${modelLabel(realAdapter.provider, realAdapter.model)})` : ""}
             {realUnavailable ? " — unavailable on this worker" : ""}
           </option>
           <option value="simulated">SIMULATED (no AI, scripted demo)</option>
@@ -279,7 +309,7 @@ function TeamTab({ project }: { project: any }) {
       <div className="row between wrap">
         <h3>People on this project</h3>
         <a href={`#/w/${project.workspaceId}`}>
-          {project.role === "owner" ? "Invite or manage members →" : "View team →"}
+          {project.role === "owner" ? "Invite or manage members" : "View team"}
         </a>
       </div>
       <p className="muted small">
@@ -342,13 +372,14 @@ npm run dev:worker`
                   <div className="grow stack tight" style={{ gap: 4 }}>
                     <div className="row wrap">
                       <b>{w.name}</b> <WorkerBadge worker={w} />
+                      {w.hosted && <span className="badge">runs on this Pairloom server</span>}
                     </div>
                     <ul className="adapters">
                       {w.adapters.map((a) => (
                         <li key={a.kind} className={a.available ? "" : "muted"}>
                           {a.kind === "simulated"
                             ? "Simulator"
-                            : `Real agent (${a.kind === "llm-harness" ? `${a.provider ?? ""} ${a.model ?? ""}`.trim() : "Claude Agent SDK"})`}
+                            : `Real agent (${a.kind === "llm-harness" ? modelLabel(a.provider, a.model) : "Claude Agent SDK"})`}
                           : {a.available ? "available" : "unavailable"} — {a.detail}
                         </li>
                       ))}
@@ -357,15 +388,20 @@ npm run dev:worker`
                       )}
                     </ul>
                   </div>
-                  {isOwner && !w.revoked && (
+                  {isOwner && !w.revoked && !w.hosted && (
                     <button
                       className="link danger small"
                       onClick={async () => {
-                        const ok = await dialog.confirm(`Revoke worker “${w.name}”?`, {
-                          body: "Its token stops working and it disconnects. Running tasks on it are interrupted.",
-                          confirmLabel: "Revoke",
-                          danger: true,
-                        });
+                        const ok = await dialog.confirm(
+                          w.hosted ? "Shut down this workspace?" : `Revoke worker “${w.name}”?`,
+                          {
+                            body: w.hosted
+                              ? "The agent stops running for this project and running tasks are interrupted. The repository and history are kept, but the workspace can't be restarted from the app yet."
+                              : "Its token stops working and it disconnects. Running tasks on it are interrupted.",
+                            confirmLabel: w.hosted ? "Shut down" : "Revoke",
+                            danger: true,
+                          },
+                        );
                         if (ok) await run(() => del(`/api/workers/${w.id}`), "Worker revoked");
                         reload();
                       }}
@@ -382,13 +418,55 @@ npm run dev:worker`
 
       {isOwner && (
         <section className="card stack">
-          <h3>Connect a worker</h3>
+          <h3>
+            {project.hosted ? "Also connect your own machine (optional)" : "Connect a worker"}
+          </h3>
           {newToken ? (
             <div className="stack tight">
-              <p className="small">
-                Token for <b>{newToken.worker.name}</b> — shown once. Put it in the worker's
-                environment, never in chat or git:
-              </p>
+              <ol className="steps">
+                <li>
+                  <span className="num">1</span>
+                  <div className="small">
+                    <b>Get Pairloom on that machine</b>
+                    <p className="muted">
+                      Clone the same Pairloom version this server runs, then run <code>npm ci</code>{" "}
+                      in it. Needs Node 22.13+ and git.
+                    </p>
+                  </div>
+                </li>
+                <li>
+                  <span className="num">2</span>
+                  <div className="small">
+                    <b>Make a dedicated copy of {project.name}</b>
+                    {project.hosted ? (
+                      <p className="muted">
+                        Download the project from the Files tab, unpack it, and in that folder run{" "}
+                        <code>
+                          git init -b {project.defaultBranch} && git add -A && git commit -m start
+                        </code>
+                        . Put its path in <code>PAIRLOOM_REPO_PATH</code> below. That copy is
+                        separate: work merged on your machine stays there and doesn't sync back to
+                        this hosted copy.
+                      </p>
+                    ) : (
+                      <p className="muted">
+                        Not your everyday checkout: the agent creates branches and merges in it. Put
+                        its path in <code>PAIRLOOM_REPO_PATH</code> below.
+                      </p>
+                    )}
+                  </div>
+                </li>
+                <li>
+                  <span className="num">3</span>
+                  <div className="small">
+                    <b>Start the worker</b>
+                    <p className="muted">
+                      In the Pairloom folder, run these lines. The token is shown only once; keep it
+                      out of chat and git. This page shows the worker as online when it connects.
+                    </p>
+                  </div>
+                </li>
+              </ol>
               <pre className="select callout">{setup}</pre>
               <div className="row">
                 <CopyButton text={setup} label="Copy setup" />
@@ -434,4 +512,68 @@ function upsert<T extends { id: string }>(list: T[], item: T, prepend = false): 
   const copy = list.slice();
   copy[i] = item;
   return copy;
+}
+
+/** Plain-language state of a Pairloom-hosted workspace: starting, ready, or missing an AI key. */
+function HostedStatus({ project }: { project: any }) {
+  const w: WorkerDTO | undefined = project.workers.find((x: WorkerDTO) => x.hosted && !x.revoked);
+  // A workspace that never comes online gets an explicit timeout, not an endless spinner.
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setSlow(true), 60_000);
+    return () => window.clearTimeout(t);
+  }, []);
+  if (!w) return null;
+  const real = w.adapters.find((a) => a.kind !== "simulated");
+  if (!w.online && !w.lastSeenAt && slow)
+    return (
+      <div className="card attention stack tight" role="alert">
+        <b>The workspace hasn't started</b>
+        <p className="small">
+          It has been over a minute. Whoever runs this Pairloom server should check its log for
+          "hosted worker" errors. Tasks you start now will wait until it connects.
+        </p>
+      </div>
+    );
+  if (!w.online)
+    return (
+      <div className="card stack tight">
+        <div className="row">
+          <span className="spinner" />
+          <b>Starting the workspace…</b>
+        </div>
+        <p className="muted small">
+          {w.lastSeenAt
+            ? "It was running before; Pairloom is restarting it. Tasks you start now begin when it's back."
+            : "Pairloom is preparing this project's workspace. This takes a few seconds."}
+        </p>
+      </div>
+    );
+  if (real && !real.available)
+    return (
+      <div className="card attention stack tight">
+        <b>The AI agent isn't configured on this server</b>
+        <p className="small">
+          Whoever runs this Pairloom server needs to set <code>GROQ_API_KEY</code> (a free key from
+          console.groq.com) and restart it. Until then you can run <b>simulated</b> tasks to try the
+          workflow; they make clearly labelled placeholder changes, not real ones.
+        </p>
+      </div>
+    );
+  return (
+    <div className="card stack tight">
+      <div className="row">
+        <span className="badge dot tone-ok">ready</span>
+        <b>Workspace ready</b>
+      </div>
+      <p className="muted small">
+        The agent reads and edits this project's repository on the Pairloom server
+        {real?.model ? ` using ${modelLabel(real.provider, real.model)}` : ""}. Each task gets its
+        own branch; nothing reaches <code>{project.defaultBranch}</code> until someone reviews and
+        merges it.
+        {real?.codeExecution === false &&
+          " For safety this server doesn't run project code, so tests aren't run here — review the diff, or run them on your own machine."}
+      </p>
+    </div>
+  );
 }

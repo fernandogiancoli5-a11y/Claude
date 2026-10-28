@@ -95,3 +95,23 @@ describe("request budget", () => {
     expect(loadHarnessLimits({ AGENT_MAX_CONTEXT_CHARS: "5000" }).maxContextChars).toBe(5000);
   });
 });
+
+describe("provider error text shown to collaborators", () => {
+  it("drops the provider account id and upsell link", async () => {
+    const { classifyHttpError } = await import("../src/harness/provider.js");
+    const e = classifyHttpError(
+      { provider: "groq", apiKeyEnv: "GROQ_API_KEY" },
+      429,
+      JSON.stringify({
+        error: {
+          message:
+            "Rate limit reached for model `m` in organization `org_secret123` service tier `on_demand` on tokens per day (TPD): Limit 200000. Please try again in 2m. Need more tokens? Upgrade at https://x",
+        },
+      }),
+      "150",
+    );
+    expect(e.kind).toBe("rate_limited");
+    expect(e.message).toMatch(/tokens per day/);
+    expect(e.message).not.toMatch(/org_secret123|Need more tokens/);
+  });
+});

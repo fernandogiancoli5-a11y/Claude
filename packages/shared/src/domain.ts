@@ -77,6 +77,8 @@ export const AdapterInfo = z.object({
   version: z.string().max(100).optional(),
   provider: z.string().max(50).optional(),
   model: z.string().max(200).optional(),
+  /** False when this worker refuses to run project code (tests/commands), e.g. hosted workers. */
+  codeExecution: z.boolean().optional(),
 });
 export type AdapterInfo = z.infer<typeof AdapterInfo>;
 
@@ -139,6 +141,8 @@ export interface AgentSessionDTO {
   createdAt: string;
   updatedAt: string;
   endedAt: string | null;
+  /** How the agent's latest turn ended: "end_turn" (it finished) or an error/limit subtype. */
+  lastOutcome: string | null;
 }
 
 export interface WorkerDTO {
@@ -150,6 +154,8 @@ export interface WorkerDTO {
   lastSeenAt: string | null;
   adapters: AdapterInfo[];
   revoked: boolean;
+  /** Run by the Pairloom server itself for a hosted project (no setup by users). */
+  hosted: boolean;
 }
 
 export const LIMITS = {

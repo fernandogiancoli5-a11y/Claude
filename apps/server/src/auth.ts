@@ -35,6 +35,37 @@ export class AuthService {
     return { id: row.id, email: row.email, display_name: row.display_name };
   }
 
+  /**
+   * Changes a password after re-checking the current one, and signs out every other session
+   * (the caller keeps `keepToken`). There is no email service, so this plus the operator reset
+   * (scripts/reset-password.ts) is the supported recovery path.
+   */
+  async changePassword(userId: string, current: string, next: string, keepToken?: string) {
+    const row = this.db.prepare("SELECT password_hash FROM users WHERE id = ?").get(userId) as
+      { password_hash: string } | undefined;
+    if (!row || !(await verifyPassword(current, row.password_hash))) {
+      throw new HttpError(403, "Your current password is incorrect");
+    }
+    this.db
+      .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+      .run(await hashPassword(next), userId);
+    this.db
+      .prepare("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash != ?")
+      .run(userId, keepToken ? sha256(keepToken) : "");
+  }
+
+  /** Operator reset: sets a new password and signs the account out everywhere. */
+  async resetPassword(email: string, next: string): Promise<boolean> {
+    const row = this.db.prepare("SELECT id FROM users WHERE email = ?").get(email) as
+      { id: string } | undefined;
+    if (!row) return false;
+    this.db
+      .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+      .run(await hashPassword(next), row.id);
+    this.db.prepare("DELETE FROM auth_sessions WHERE user_id = ?").run(row.id);
+    return true;
+  }
+
   createSession(userId: string): { token: string; expiresAt: Date } {
     const token = newSecret(32);
     const expiresAt = new Date(Date.now() + this.config.sessionTtlHours * 3600_000);

@@ -55,6 +55,8 @@ export class ProviderError extends Error {
   ) {
     super(message);
   }
+  /** Provider's raw error text, for the operator's log only (never sent to collaborators). */
+  detail?: string;
 }
 
 export interface ProviderConfig {
@@ -233,8 +235,8 @@ export class OpenAICompatibleClient implements ModelClient {
     const body: Record<string, unknown> = {
       model: this.config.model,
       messages,
-      tools,
-      tool_choice: "auto",
+      // No tools means a plain answer (used for a turn's closing summary).
+      ...(tools.length ? { tools, tool_choice: "auto" } : {}),
       max_completion_tokens: this.config.maxCompletionTokens,
     };
     if (this.config.reasoningEffort) body.reasoning_effort = this.config.reasoningEffort;
@@ -288,7 +290,20 @@ export class OpenAICompatibleClient implements ModelClient {
 }
 
 /** Never includes the API key or request body in messages. */
-export function classifyHttpError(
+export function classifyHttpError(...args: Parameters<typeof classifyHttpErrorInner>) {
+  const e = classifyHttpErrorInner(...args);
+  const body = args[2];
+  try {
+    const parsed = JSON.parse(body);
+    const err = Array.isArray(parsed) ? parsed[0]?.error : parsed.error;
+    if (err?.message) e.detail = String(err.message).slice(0, 1000);
+  } catch {
+    e.detail = body.slice(0, 300);
+  }
+  return e;
+}
+
+function classifyHttpErrorInner(
   cfg: Pick<ProviderConfig, "provider" | "apiKeyEnv">,
   status: number,
   body: string,
@@ -296,10 +311,15 @@ export function classifyHttpError(
 ): ProviderError {
   let message = "";
   let code = "";
+
   try {
     const parsed = JSON.parse(body);
     const err = Array.isArray(parsed) ? parsed[0]?.error : parsed.error;
-    message = String(err?.message ?? "").slice(0, 500);
+    // Collaborators see this text: drop the provider account id and upsell links.
+    message = String(err?.message ?? "")
+      .replace(/ in organization `[^`]*`/g, "")
+      .replace(/\s*Need more tokens\?.*$/s, "")
+      .slice(0, 500);
     code = String(err?.code ?? err?.type ?? "");
   } catch {
     message = body.slice(0, 200);

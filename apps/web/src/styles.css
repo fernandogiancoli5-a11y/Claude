@@ -1066,3 +1066,136 @@ dialog form {
   gap: 14px;
   padding: 20px;
 }
+
+/* ---------- project source choices ---------- */
+.choices {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.choices legend {
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 400;
+}
+.choice input {
+  width: auto;
+  margin-top: 4px;
+}
+.choice > span {
+  display: grid;
+  gap: 2px;
+}
+.choice.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---------- file browser ---------- */
+.files-view {
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+  min-height: 360px;
+}
+.file-list {
+  border-right: 1px solid var(--border);
+  max-height: 560px;
+  overflow: auto;
+  padding: 6px;
+  font-size: 13px;
+}
+.file-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-list button[aria-current="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.file-body {
+  min-width: 0;
+  max-height: 560px;
+  overflow: auto;
+}
+.file-body pre {
+  padding: 12px 16px;
+  white-space: pre;
+  font-size: 12.5px;
+}
+@media (max-width: 760px) {
+  .files-view {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .file-list {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 220px;
+  }
+}
+
+/* ---------- activity threads: who acted ---------- */
+.event {
+  border-left: 3px solid transparent;
+}
+.event.t-person {
+  border-left-color: var(--accent);
+}
+.event.t-agent {
+  border-left-color: var(--ok);
+}
+.event.t-system {
+  border-left-color: var(--border-strong);
+}
+.thread-key {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.thread-key span::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  margin-right: 5px;
+  vertical-align: middle;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+.thread-key .k-person::before {
+  background: var(--accent);
+}
+.thread-key .k-agent::before {
+  background: var(--ok);
+}
+.callout.turn-live .spinner {
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+.callout.turn-failed p {
+  margin: 0;
+}
+.callout.turn-failed p + p {
+  margin-top: 8px;
+}

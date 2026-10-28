@@ -243,7 +243,7 @@ try {
   await waitFor(
     () =>
       owner
-        .getByText(/Real agent \((groq|custom endpoint [^ ]+) openai\/gpt-oss-120b\): available/)
+        .getByText(/Real agent \(gpt-oss-120b (via Groq|on a custom endpoint)\): available/)
         .isVisible(),
     "real adapter available",
   );
@@ -276,10 +276,7 @@ try {
 
   await collab.goto(sessionUrl);
   await waitFor(
-    () =>
-      collab
-        .getByText(/agent ready · (groq|custom endpoint [^ ]+) openai\/gpt-oss-120b/)
-        .isVisible(),
+    () => collab.getByText(/ready · gpt-oss-120b (via Groq|on a custom endpoint)/).isVisible(),
     "collab sees agent init",
   );
 

@@ -30,7 +30,8 @@
     "dev:site": "npm run dev -w @pairloom/site",
     "smoke:site": "npm run build && node scripts/site-smoke.mjs",
     "waitlist:export": "node scripts/waitlist-export.mjs",
-    "test:sql": "bash scripts/test-supabase-sql.sh"
+    "test:sql": "bash scripts/test-supabase-sql.sh",
+    "smoke:hosted": "npm run build && node scripts/hosted-smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

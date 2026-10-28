@@ -13,6 +13,16 @@ import { type Db, openDb } from "./db.js";
 import { Hub } from "./hub.js";
 import { rateLimitKey, WAITLIST_RATE_LIMIT, WaitlistInput } from "@pairloom/shared/waitlist";
 import { RateLimiter, Waitlist } from "./waitlist.js";
+import {
+  archiveRef,
+  createRepo,
+  diffCommits,
+  downloadName,
+  HostedWorkers,
+  listFiles,
+  readFile as readRepoFile,
+  RepoSetupError,
+} from "./hosted.js";
 
 export interface App {
   fastify: FastifyInstance;
@@ -20,6 +30,8 @@ export interface App {
   hub: Hub;
   auth: AuthService;
   db: Db;
+  /** Supervisor for Pairloom-hosted workers; null when hosting is off. */
+  hosted: HostedWorkers | null;
 }
 
 const Email = z.string().trim().toLowerCase().email().max(254);
@@ -44,9 +56,42 @@ export async function buildApp(
   const core = new Core(db);
   const waitlist = new Waitlist(db);
   const waitlistLimiter = new RateLimiter(WAITLIST_RATE_LIMIT.max, WAITLIST_RATE_LIMIT.windowMs);
+  // Failed password checks, counted three ways over 15 minutes. One address guessing at one
+  // account is stopped quickly; an account only locks for everyone after far more failures
+  // (guessing spread over many addresses), so a stranger can't trivially lock someone out.
+  const lockWindowMs = 15 * 60_000;
+  const failures = {
+    pair: new RateLimiter(10, lockWindowMs), // one address, one account
+    address: new RateLimiter(50, lockWindowMs), // one address, any accounts
+    account: new RateLimiter(100, lockWindowMs), // one account, any addresses
+  };
+  const guarded = async <T>(
+    req: FastifyRequest,
+    account: string,
+    check: () => Promise<T>,
+  ): Promise<T> => {
+    const ip = rateLimitKey(req.ip) ?? req.ip;
+    const keys: Array<[RateLimiter, string]> = [
+      [failures.pair, `${account}|${ip}`],
+      [failures.address, ip],
+      [failures.account, account],
+    ];
+    if (keys.some(([l, k]) => l.blocked(k)))
+      throw new HttpError(429, "Too many failed attempts. Wait 15 minutes and try again.");
+    try {
+      return await check();
+    } catch (err) {
+      if (err instanceof HttpError && (err.status === 401 || err.status === 403))
+        for (const [l, k] of keys) l.allow(k);
+      throw err;
+    }
+  };
   const hub = new Hub(core, config.heartbeatMs);
   core.notifier = hub;
   const auth = new AuthService(db, config);
+  const hosted = config.hostedWorkers
+    ? new HostedWorkers(core, config.hostedDir, (m) => fastify.log.info(m))
+    : null;
   core.reconcileOnStartup();
 
   await fastify.register(cookie);
@@ -108,10 +153,32 @@ export async function buildApp(
 
   fastify.post("/api/auth/login", async (req, reply) => {
     const input = body(z.object({ email: Email, password: z.string().max(200) }), req);
-    const u = await auth.login(input.email, input.password);
+    const u = await guarded(req, `email:${input.email.toLowerCase()}`, () =>
+      auth.login(input.email, input.password),
+    );
     const s = auth.createSession(u.id);
     auth.setCookie(reply, s.token, s.expiresAt);
     return { user: { id: u.id, email: u.email, displayName: u.display_name } };
+  });
+
+  fastify.post("/api/auth/password", async (req) => {
+    const u = user(req);
+    const input = body(
+      z.object({
+        currentPassword: z.string().min(1).max(200),
+        newPassword: z.string().min(10, "Use at least 10 characters").max(200),
+      }),
+      req,
+    );
+    await guarded(req, `user:${u.id}`, () =>
+      auth.changePassword(
+        u.id,
+        input.currentPassword,
+        input.newPassword,
+        req.cookies[SESSION_COOKIE],
+      ),
+    );
+    return { ok: true };
   });
 
   fastify.post("/api/auth/logout", async (req, reply) => {
@@ -180,16 +247,47 @@ export async function buildApp(
 
   // ---------------------------------------------------------- projects
 
+  // What this server offers new projects (the browser adapts its setup flow to it).
+  fastify.get("/api/config", async (req) => {
+    user(req);
+    return { hostedWorkers: Boolean(hosted) };
+  });
+
   fastify.post("/api/workspaces/:id/projects", async (req) => {
     const input = body(
       z.object({
         name: Name,
         repoUrl: z.string().trim().max(500).nullish(),
         defaultBranch: BranchName.default("main"),
+        // "external": the team runs its own worker; the others create a Pairloom-hosted repo.
+        source: z.enum(["external", "sample", "empty", "git"]).default("external"),
       }),
       req,
     );
-    return core.createProject(user(req).id, param(req, "id"), input);
+    const { source, ...project } = input;
+    if (source === "external") return core.createProject(user(req).id, param(req, "id"), project);
+    if (!hosted)
+      throw new HttpError(400, "This server doesn't host workspaces; connect your own worker");
+    if (source === "git" && !project.repoUrl)
+      throw new HttpError(400, "Enter the repository's https URL");
+    const created = core.createProject(user(req).id, param(req, "id"), project, { hosted: true });
+    try {
+      const { branch } = await createRepo(
+        hosted.repoPath(created.id),
+        source === "git"
+          ? { kind: "git", url: project.repoUrl! }
+          : source === "sample"
+            ? { kind: "sample" }
+            : { kind: "empty", branch: project.defaultBranch },
+      );
+      if (branch !== project.defaultBranch) core.setProjectBranch(created.id, branch);
+      hosted.ensure(created.hostedWorkerId!, created.id);
+      return { ...created, defaultBranch: branch };
+    } catch (err) {
+      core.discardNewProject(created.id);
+      if (err instanceof RepoSetupError) throw new HttpError(400, err.message);
+      throw err;
+    }
   });
 
   fastify.get("/api/projects/:id", async (req) => core.getProject(user(req).id, param(req, "id")));
@@ -202,9 +300,80 @@ export async function buildApp(
     return core.createWorker(user(req).id, param(req, "id"), input);
   });
 
-  fastify.delete("/api/workers/:id", async (req) =>
-    core.revokeWorker(user(req).id, param(req, "id")),
-  );
+  // Read-only view of a hosted project's repository: the base branch (what has been merged)
+  // or one task's branch as of its last checkpoint. Only those refs, never arbitrary ones.
+  const fileRef = (req: FastifyRequest) => {
+    const q = z
+      .object({ sessionId: z.string().max(64).optional(), path: z.string().max(1000).optional() })
+      .parse(req.query ?? {});
+    const ref = core.projectFileRef(user(req).id, param(req, "id"), q.sessionId);
+    if (!hosted || !ref.hosted)
+      throw new HttpError(
+        404,
+        "Files are only browsable for Pairloom-hosted projects",
+        "not_hosted",
+      );
+    return { ...ref, repo: hosted.repoPath(param(req, "id")), path: q.path };
+  };
+  fastify.get("/api/projects/:id/files", async (req) => {
+    const r = fileRef(req);
+    try {
+      return { ref: r.ref, ...(await listFiles(r.repo, r.ref)) };
+    } catch {
+      throw new HttpError(404, "That branch has no commits yet");
+    }
+  });
+  fastify.get("/api/projects/:id/file", async (req) => {
+    const r = fileRef(req);
+    if (!r.path) throw new HttpError(400, "path is required");
+    try {
+      const f = await readRepoFile(r.repo, r.ref, r.path);
+      if (!f) throw new HttpError(404, "No such file");
+      return { ref: r.ref, ...f };
+    } catch (err) {
+      if (err instanceof RepoSetupError) throw new HttpError(400, err.message);
+      throw err;
+    }
+  });
+
+  // Getting work out: the project (or a task's branch) as a .tar.gz, and any change set as a patch.
+  fastify.get("/api/projects/:id/archive", async (req, reply) => {
+    const r = fileRef(req);
+    const project = core.getProject(user(req).id, param(req, "id"));
+    const name = downloadName(project.name, r.ref.replace(/\//g, "-"));
+    try {
+      const { stream } = await archiveRef(r.repo, r.ref, name);
+      return reply
+        .header("content-type", "application/gzip")
+        .header("content-disposition", `attachment; filename="${name}.tar.gz"`)
+        .send(stream);
+    } catch {
+      throw new HttpError(404, "That branch has no commits yet");
+    }
+  });
+
+  fastify.get("/api/changesets/:id/patch", async (req, reply) => {
+    const c = core.changeSetForDownload(user(req).id, param(req, "id"));
+    let patch: string | Buffer = c.diff;
+    if (hosted && core.projectFileRef(user(req).id, c.project_id).hosted) {
+      patch = await diffCommits(hosted.repoPath(c.project_id), c.base_commit, c.head_commit);
+    } else if (c.diff_truncated) {
+      throw new HttpError(
+        409,
+        "This diff was too large to keep in full; get it from the worker's repository",
+      );
+    }
+    return reply
+      .header("content-type", "text/x-diff; charset=utf-8")
+      .header("content-disposition", `attachment; filename="${downloadName(c.title)}.patch"`)
+      .send(patch);
+  });
+
+  fastify.delete("/api/workers/:id", async (req) => {
+    const w = core.revokeWorker(user(req).id, param(req, "id"));
+    if (w.hosted) hosted?.stop(w.id);
+    return w;
+  });
 
   // ---------------------------------------------------------- sessions
 
@@ -375,7 +544,10 @@ export async function buildApp(
     });
   }
 
-  fastify.addHook("onClose", async () => hub.closeAll());
+  fastify.addHook("onClose", async () => {
+    await hosted?.stopAll();
+    hub.closeAll();
+  });
 
-  return { fastify, core, hub, auth, db };
+  return { fastify, core, hub, auth, db, hosted };
 }

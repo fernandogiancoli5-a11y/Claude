@@ -7,7 +7,9 @@ import {
   type ChatToolCall,
   type ModelClient,
   ProviderError,
+  type ToolSchema,
   estimateCostUsd,
+  estimateRequestTokens,
 } from "./provider.js";
 import { buildRequestMessages } from "./context.js";
 import {
@@ -16,6 +18,7 @@ import {
   type ToolName,
   ToolError,
   classifyToolCall,
+  codeExecutionAllowed,
   loadProjectSettings,
   runCommand,
   toolSchemas,
@@ -33,6 +36,13 @@ export interface HarnessLimits {
   commandTimeoutMs: number;
   /** Request budget in characters of JSON; see buildRequestMessages. */
   maxContextChars: number;
+  /**
+   * Prompt + completion tokens one turn may use. Free tiers share a small daily allowance
+   * across the whole deployment, so one wandering task must not spend all of it.
+   */
+  maxTokensPerTurn: number;
+  /** The same across all turns of a task, so "continue" can't reset the spending. */
+  maxTokensPerSession: number;
 }
 
 export const DEFAULT_LIMITS: HarnessLimits = {
@@ -42,6 +52,8 @@ export const DEFAULT_LIMITS: HarnessLimits = {
   maxCostUsdPerSession: 0.5,
   commandTimeoutMs: 120_000,
   maxContextChars: 240_000,
+  maxTokensPerTurn: 60_000,
+  maxTokensPerSession: 150_000,
 };
 
 interface Transcript {
@@ -52,6 +64,8 @@ interface Transcript {
   completionTokens: number;
   costUsd: number | null;
 }
+
+const READ_ONLY_TOOLS = new Set<ToolName>(["list_files", "read_file", "search"]);
 
 const KNOWN_TOOLS = new Set<ToolName>([
   "list_files",
@@ -64,21 +78,22 @@ const KNOWN_TOOLS = new Set<ToolName>([
   "run_command",
 ]);
 
-function systemPrompt(settings: ProjectSettings) {
+function systemPrompt(settings: ProjectSettings, canRunCode = true) {
   return `You are a careful software engineer working inside Pairloom, a shared workspace where a small team supervises you.
 
 Environment:
 - You can only act through the provided tools. Paths are relative to the project root. You cannot leave the project directory.
 - You work on an isolated git branch. Do not try to commit, push, or switch branches; Pairloom handles git and humans review your diff before merging.
 - Commands run without a shell (argv arrays only). Network tools, sudo and git branch/remote commands are refused. Deleting files and running arbitrary commands need the session host's approval; a denial is final for that call.
-${settings.testCommand ? `- Run the test suite with the run_tests tool (${settings.testCommand.join(" ")}).` : "- This project has no configured test command."}
+${!canRunCode ? "- You cannot run code, tests or commands here. Don't claim anything was tested; say what the reviewers should check." : settings.testCommand ? `- Run the test suite with the run_tests tool (${settings.testCommand.join(" ")}).` : "- This project has no configured test command."}
 
 Working style:
 - Messages come from different collaborators; each one says who sent it and was approved by the host.
 - Look at the relevant files before editing. Keep changes small and focused on the request.
 - Prefer edit_file for small changes; use write_file for new files.
-- After changing code, run the tests if available and fix failures you caused.
-- Finish with a short summary: what you changed, and the result of the last test run. Never claim tests passed unless you ran them and they did.`;
+- Read a file once; earlier tool results stay in your context. After an edit, read back only the lines you changed (read_file with offset/limit).
+- Every model call counts against a small per-minute budget, so stop calling tools as soon as the change is done.
+${canRunCode ? "- After changing code, run the tests if available and fix failures you caused.\n- Finish with a short summary: what you changed, and the result of the last test run. Never claim tests passed unless you ran them and they did." : "- Finish with a short summary: what you changed, and what reviewers should check, since nothing was run."}`;
 }
 
 export class HarnessAdapter implements AgentAdapter {
@@ -94,6 +109,7 @@ export class HarnessAdapter implements AgentAdapter {
       kind: "llm-harness" as const,
       provider: c.provider,
       model: c.model,
+      codeExecution: codeExecutionAllowed(),
     };
     return c.apiKey
       ? {
@@ -117,8 +133,14 @@ export class HarnessAdapter implements AgentAdapter {
     const cfg = this.client.config;
     const limits = this.limits;
     const sandbox = new Sandbox(ctx.cwd);
-    const settings = loadProjectSettings(ctx.cwd);
-    const tools = toolSchemas(settings);
+    const canRunCode = codeExecutionAllowed();
+    const settings: ProjectSettings = canRunCode
+      ? loadProjectSettings(ctx.cwd)
+      : { testCommand: null, allowedCommands: [] };
+    // Without code execution the model never sees the run tools, so it doesn't plan around them.
+    const tools = toolSchemas(settings).filter(
+      (t) => canRunCode || (t.function.name !== "run_command" && t.function.name !== "run_tests"),
+    );
     const transcriptDir = join(this.stateDir, "transcripts");
     mkdirSync(transcriptDir, { recursive: true });
     const transcriptId = `harness-${ctx.sessionId}`;
@@ -147,7 +169,7 @@ export class HarnessAdapter implements AgentAdapter {
       }
       state = {
         version: 1,
-        messages: [{ role: "system", content: systemPrompt(settings) }],
+        messages: [{ role: "system", content: systemPrompt(settings, canRunCode) }],
         modelCalls: 0,
         promptTokens: 0,
         completionTokens: 0,
@@ -197,6 +219,36 @@ export class HarnessAdapter implements AgentAdapter {
       const turnStartCost = state.costUsd;
       let iterations = 0;
       let malformedRetries = 0;
+      const seenReads = new Set<string>();
+      /** Consecutive tool calls answered "same as before": the model is going in circles. */
+      let repeats = 0;
+      const edited = new Set<string>();
+      const turnStartTokens = state.promptTokens + state.completionTokens;
+      /** True once a response came without usage figures and tokens had to be estimated. */
+      let usageEstimated = false;
+      const addUsage = (
+        result: {
+          usage: { promptTokens: number; completionTokens: number; cachedTokens: number };
+          message: { content: string | null };
+        },
+        sent: ChatMessage[],
+        sentTools: ToolSchema[],
+      ) => {
+        let usage = result.usage;
+        if (!usage.promptTokens && !usage.completionTokens) {
+          // Never let missing figures switch the budget off: estimate from what was sent.
+          usageEstimated = true;
+          usage = {
+            promptTokens: estimateRequestTokens(sent, sentTools),
+            completionTokens: Math.ceil((result.message.content ?? "").length / 3.5) + 50,
+            cachedTokens: 0,
+          };
+        }
+        state.promptTokens += usage.promptTokens;
+        state.completionTokens += usage.completionTokens;
+        const cost = estimateCostUsd(cfg, usage);
+        if (state.costUsd !== null && cost !== null) state.costUsd += cost;
+      };
       let lastTestRun: { exitCode: number | null; timedOut: boolean } | null = null;
       state.messages.push({ role: "user", content: text });
       persist();
@@ -219,12 +271,52 @@ export class HarnessAdapter implements AgentAdapter {
           sessionCostUsd: state.costUsd,
           costIsEstimate: true,
           durationMs: Date.now() - turnStart,
+          tokensThisTurn: state.promptTokens + state.completionTokens - turnStartTokens,
+          tokensSession: state.promptTokens + state.completionTokens,
+          usageEstimated,
           lastTestRun,
+          filesEdited: [...edited],
           ...extra,
         });
         ctx.onTurnEnd({ subtype, isError });
       };
       const aborted = () => (timedOut ? "error_max_time" : "interrupted");
+
+      const wrapUp = async (subtype: string, message: string) => {
+        const files = edited.size ? [...edited].join(", ") : "none";
+        state.messages.push({
+          role: "user",
+          content:
+            `[Pairloom] This turn is ending: ${message}. Tools are off now. In a few lines, say ` +
+            `which files you changed (this turn: ${files}), what is done, and what is still left to do.`,
+        });
+        persist();
+        try {
+          const sent = buildRequestMessages(state.messages, limits.maxContextChars);
+          const { result, calls } = await this.client.complete(sent, [], controller.signal);
+          iterations++;
+          state.modelCalls += calls;
+          addUsage(result, sent, []);
+          state.messages.push({ role: "assistant", content: result.message.content });
+          persist();
+          if (result.message.content?.trim()) {
+            ctx.emit("agent.text", {
+              text: truncate(result.message.content, SHARED_LIMITS.agentTextMaxChars),
+            });
+          }
+        } catch (err) {
+          if (controller.signal.aborted) return finish(aborted(), true);
+          const e = err instanceof ProviderError ? err : new ProviderError("server", String(err));
+          state.modelCalls += (e as ProviderError & { calls?: number }).calls ?? 1;
+          persist();
+          if (e.detail) console.error(`[provider ${cfg.provider}] ${e.status ?? ""} ${e.detail}`);
+          ctx.emit("system.notice", {
+            level: "warn",
+            message: `The closing summary couldn't be generated: ${e.message}`,
+          });
+        }
+        return finish(subtype, true, { message });
+      };
 
       for (;;) {
         if (controller.signal.aborted) return finish(aborted(), true);
@@ -248,6 +340,38 @@ export class HarnessAdapter implements AgentAdapter {
           });
         }
 
+        // Stop before a hard limit, keeping one tools-off call so the model can say what it
+        // did and what is left, instead of the turn just ending mid-edit.
+        const turnTokens = state.promptTokens + state.completionTokens - turnStartTokens;
+        const stop =
+          iterations >= limits.maxIterationsPerTurn - 1
+            ? {
+                subtype: "error_max_iterations",
+                message: `Stopped at the limit of ${limits.maxIterationsPerTurn} model calls in one turn`,
+              }
+            : turnTokens >= limits.maxTokensPerTurn
+              ? {
+                  subtype: "error_token_budget",
+                  message: `Stopped after using ${turnTokens} tokens, this turn's budget of ${limits.maxTokensPerTurn}`,
+                }
+              : state.promptTokens + state.completionTokens >= limits.maxTokensPerSession
+                ? {
+                    subtype: "error_session_token_budget",
+                    message: `This task has used its total budget of ${limits.maxTokensPerSession} tokens across all turns`,
+                  }
+                : repeats >= 3
+                  ? {
+                      subtype: "error_no_progress",
+                      message:
+                        "Stopped: the agent repeated the same tool calls without making progress",
+                    }
+                  : null;
+        if (stop) {
+          // Already over the task's total at the start of a turn: no summary call either.
+          if (iterations === 0 && stop.subtype === "error_session_token_budget")
+            return finish(stop.subtype, true, { message: stop.message });
+          return wrapUp(stop.subtype, stop.message);
+        }
         const request = buildRequestMessages(state.messages, limits.maxContextChars);
         let completion;
         try {
@@ -285,6 +409,8 @@ export class HarnessAdapter implements AgentAdapter {
             });
             continue;
           }
+          // Full provider text (account ids etc.) goes to the operator's log, not the team.
+          if (e.detail) console.error(`[provider ${cfg.provider}] ${e.status ?? ""} ${e.detail}`);
           ctx.emit("agent.error", { message: e.message, kind: e.kind, status: e.status ?? null });
           return finish(`error_provider_${e.kind}`, true, { message: e.message });
         }
@@ -292,10 +418,7 @@ export class HarnessAdapter implements AgentAdapter {
         const { result, calls } = completion;
         iterations++;
         state.modelCalls += calls;
-        state.promptTokens += result.usage.promptTokens;
-        state.completionTokens += result.usage.completionTokens;
-        const cost = estimateCostUsd(cfg, result.usage);
-        if (state.costUsd !== null && cost !== null) state.costUsd += cost;
+        addUsage(result, request, tools);
         const toolCalls = (result.message.tool_calls ?? []).filter((t) => t.type === "function");
         state.messages.push({
           role: "assistant",
@@ -318,6 +441,28 @@ export class HarnessAdapter implements AgentAdapter {
         }
 
         for (const call of toolCalls) {
+          // An identical read with nothing written since returns a pointer, not the same text
+          // again: repeats burned the provider's per-minute token budget without progress.
+          const key = readKey(call, sandbox);
+          const readOnly = READ_ONLY_TOOLS.has(call.function.name as ToolName);
+          if (readOnly && seenReads.has(key) && !controller.signal.aborted) {
+            const note =
+              "[Pairloom] Same call as earlier in this turn and no file has changed since; " +
+              "use that result. If you are done, reply with a summary instead of calling tools.";
+            ctx.emit("agent.tool_use", {
+              toolUseId: call.id,
+              toolName: call.function.name,
+              input: truncate(call.function.arguments ?? "", SHARED_LIMITS.toolPayloadMaxChars),
+            });
+            ctx.emit("agent.tool_result", { toolUseId: call.id, isError: false, output: note });
+            state.messages.push({ role: "tool", tool_call_id: call.id, content: note });
+            persist();
+            repeats++;
+            continue;
+          }
+          repeats = 0;
+          if (readOnly) seenReads.add(key);
+          else seenReads.clear();
           const output = controller.signal.aborted
             ? "Not executed: the turn was interrupted."
             : await this.executeTool(
@@ -329,6 +474,8 @@ export class HarnessAdapter implements AgentAdapter {
                 sandboxHome,
                 (r) => (lastTestRun = r),
               );
+          const changed = /^(?:Edited|Wrote|Deleted) ([^\s.(]+(?:\.[^\s.(]+)*)/.exec(output);
+          if (changed) edited.add(changed[1]!);
           state.messages.push({ role: "tool", tool_call_id: call.id, content: output });
           persist();
         }
@@ -407,6 +554,16 @@ export class HarnessAdapter implements AgentAdapter {
       });
       return output;
     };
+    // The parse check's verdict travels as its own field: reviewers see it even when the long
+    // edit preview is truncated for display.
+    const reportEdit = (output: string) => {
+      const warning = /\nWARNING: (.*)$/.exec(output)?.[1];
+      return report(output, false, {
+        path: String(args.path).replace(/^\.\//, ""),
+        parseOk: !warning,
+        ...(warning ? { syntaxWarning: warning.slice(0, 300) } : {}),
+      });
+    };
     if (!KNOWN_TOOLS.has(name) || (name === "run_tests" && !settings.testCommand)) {
       return report(`Error: unknown tool '${name}'`, true);
     }
@@ -427,25 +584,21 @@ export class HarnessAdapter implements AgentAdapter {
         case "list_files":
           return report(sandbox.listFiles(args.path ? String(args.path) : "."), false);
         case "read_file":
-          return report(
-            await sandbox.readFile(String(args.path), num(args.offset), num(args.limit)),
-            false,
-          );
+          return report(await sandbox.readFile(String(args.path), ...readRange(args)), false);
         case "search":
           return report(
             sandbox.search(String(args.pattern ?? ""), args.path ? String(args.path) : "."),
             false,
           );
         case "write_file":
-          return report(await sandbox.writeFile(String(args.path), args.content as string), false);
+          return reportEdit(await sandbox.writeFile(String(args.path), args.content as string));
         case "edit_file":
-          return report(
+          return reportEdit(
             await sandbox.editFile(
               String(args.path),
               args.old_string as string,
               args.new_string as string,
             ),
-            false,
           );
         case "delete_file":
           return report(await sandbox.deleteFile(String(args.path)), false);
@@ -477,6 +630,49 @@ export class HarnessAdapter implements AgentAdapter {
     }
     return report("Error: unhandled tool", true);
   }
+}
+
+/**
+ * What a read-only call actually returns, so the same read spelled differently (line_start vs
+ * offset, or a range past the end of the file) still counts as a repeat.
+ */
+function readKey(call: ChatToolCall, sandbox: Sandbox): string {
+  const name = call.function.name;
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(call.function.arguments || "{}");
+  } catch {
+    return `${name}\0${call.function.arguments}`;
+  }
+  if (name === "read_file" && typeof args.path === "string") {
+    try {
+      const { abs, rel } = sandbox.resolve(args.path);
+      const lines = readFileSync(abs, "utf8").split("\n").length;
+      const [offset = 0, limit] = readRange(args);
+      const start = Math.min(offset, lines);
+      const end = Math.min(limit === undefined ? lines : start + limit, lines);
+      return `read_file\0${rel}\0${start}\0${end}`;
+    } catch {
+      // Unreadable: fall through to the literal key; the tool reports the error itself.
+    }
+  }
+  if (typeof args.path === "string") args.path = args.path.replace(/^\.?\/?$/, ".");
+  return `${name}\0${JSON.stringify(args, Object.keys(args).sort())}`;
+}
+
+/**
+ * offset/limit is the schema, but models (gpt-oss in particular) often send 1-based
+ * line_start/line_end instead. Ignoring those returned the whole file every time and the
+ * model kept re-reading it, so honour the common spellings.
+ */
+export function readRange(args: Record<string, unknown>): [number | undefined, number | undefined] {
+  const offset = num(args.offset);
+  if (offset !== undefined || num(args.limit) !== undefined) return [offset, num(args.limit)];
+  const start = num(args.line_start ?? args.start_line ?? args.start);
+  const end = num(args.line_end ?? args.end_line ?? args.end);
+  const from = start ? start - 1 : 0;
+  if (start === undefined && end === undefined) return [undefined, undefined];
+  return [from, end !== undefined ? Math.max(1, end - from) : undefined];
 }
 
 function num(v: unknown): number | undefined {

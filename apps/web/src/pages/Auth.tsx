@@ -160,6 +160,12 @@ export function AuthPage({
             >
               {mode === "login" ? "Need an account? Sign up" : "Have an account? Sign in"}
             </button>
+            {mode === "login" && (
+              <p className="muted small">
+                Forgot your password? Pairloom doesn't send email yet, so ask the person who runs
+                your Pairloom server to reset it for you.
+              </p>
+            )}
           </form>
         </div>
       </section>

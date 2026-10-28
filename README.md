@@ -46,17 +46,25 @@ cp .env.example .env                 # server settings (no secrets needed locall
 npm run dev                          # server on :8787 + web on :5173
 ```
 
-1. Open http://localhost:5173. Create an account, a workspace and a project
-   (base branch `main`).
-2. Click **Register worker** and copy the token. It is shown once.
-3. Start the worker:
-   ```bash
-   npm run sample:repo                  # creates ./data/sample-repo from samples/tiny-cart
-   cp .env.worker.example .env.worker   # set PAIRLOOM_WORKER_TOKEN; set GROQ_API_KEY for real sessions
-   npm run dev:worker
-   ```
-4. Invite a second person from the workspace page. Use a private window to play them.
-5. Start a session. A ready-made task is in `samples/tiny-cart/README.md`.
+1. Put a free Groq key in `.env` (`GROQ_API_KEY=…`, from console.groq.com) so the agent can
+   run. Without it, only clearly labelled SIMULATED tasks are available.
+2. Open http://localhost:5173, create an account and a team, then **New project → Starter
+   project** (or import a public Git repository, or start empty). Pairloom creates the
+   repository under `data/hosted/` and starts the project's agent worker itself.
+3. Start a task, e.g. "Add `itemCount(cart)` to `src/cart.js` with a test". Watch it work,
+   review the diff, approve and merge. The **Files** tab shows what's merged.
+
+**Hosted mode is restricted on purpose.** Hosted workers never run project code (tests or
+commands): nothing isolates that code from the server's secrets, database and other projects,
+and command filtering is not isolation. The agent reads and edits files and you review its diff;
+to run tests, use **Use my own machine**, where the worker runs on your hardware. (An operator
+can set `PAIRLOOM_HOSTED_CODE_EXECUTION=unsafe-allow` on a private machine with only trusted
+projects; don't on any shared or public server.)
+4. Invite a teammate from the team page (use a private window to play them).
+
+To run the agent on your own machine instead (e.g. against a private repository), choose
+**Use my own machine** when creating the project and follow the worker setup it shows
+(`npm run dev:worker` with `.env.worker`).
 
 ## Checks
 

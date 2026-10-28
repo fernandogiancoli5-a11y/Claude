@@ -192,6 +192,14 @@ const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL
   );
   `,
+  // Workers the server runs itself for Pairloom-hosted projects (see hosted.ts).
+  `
+  ALTER TABLE workers ADD COLUMN hosted INTEGER NOT NULL DEFAULT 0;
+  `,
+  // How the agent's latest turn ended ("end_turn", "error_max_time", ...); null before any.
+  `
+  ALTER TABLE agent_sessions ADD COLUMN last_outcome TEXT;
+  `,
 ];
 
 export function openDb(path: string): Db {

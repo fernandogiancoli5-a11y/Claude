@@ -1,12 +1,15 @@
 // Runs the collaboration server and the Vite dev server together.
-// The worker runs separately (`npm run dev:worker`) because it lives wherever the repo is.
+// Pairloom-hosted workspaces are on by default here, so projects created in the browser get a
+// repository and an agent worker without any setup (set PAIRLOOM_HOSTED_WORKERS=false to turn
+// that off). A worker on another machine still runs separately (`npm run dev:worker`).
 import { spawn } from "node:child_process";
 
 const procs = [
   ["server", ["run", "dev:server"]],
   ["web", ["run", "dev:web"]],
 ].map(([name, args]) => {
-  const p = spawn("npm", args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+  const env = { PAIRLOOM_HOSTED_WORKERS: "true", ...process.env };
+  const p = spawn("npm", args, { stdio: ["ignore", "pipe", "pipe"], env });
   const prefix = (chunk) =>
     chunk
       .toString()

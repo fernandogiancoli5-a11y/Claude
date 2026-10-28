@@ -4,6 +4,8 @@ import { ApiError, get, post } from "../api.js";
 import { realtime, useRealtime } from "../realtime.js";
 import { ErrorState, Loading, useCrumbs, useDialog, useToast } from "../ui.js";
 import { ModeBadge, StatusBadge, WorkerBadge } from "./badges.js";
+import { FileBrowser } from "./Files.js";
+import { modelLabel } from "./badges.js";
 import type { Me } from "../App.js";
 
 const REFETCH_ON = new Set([
@@ -92,12 +94,12 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
   const { session, role, worker } = detail;
   const isOwner = role === "owner";
   const canInstruct = role !== "viewer";
+  // A merged task is done: more work belongs in a new task, not on top of merged history.
+  const merged = detail.changeSet?.status === "merged";
   const ended = TERMINAL_STATUSES.includes(session.status);
   const simulated = session.executionMode === "simulated";
   const initPayload = [...events].reverse().find((e) => e.type === "agent.init")?.payload as any;
-  const agentModel = initPayload?.model
-    ? `${initPayload.provider ? `${initPayload.provider} ` : ""}${initPayload.model}`
-    : null;
+  const agentModel = modelLabel(initPayload?.provider, initPayload?.model);
 
   // Every action refreshes afterwards, success or not: a 409 usually means the state moved on.
   const act: Act = async (fn, success) => {
@@ -121,7 +123,12 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
       ) : (
         <div className="banner real">
           Real AI agent session{agentModel ? ` (${agentModel})` : ""} on worker “{worker?.name}”.
-          Its output is unverified until the tests run and a human reviews the diff.
+          Its output is unverified until a human reviews the diff
+          {detail.worker?.adapters?.some(
+            (a: { codeExecution?: boolean }) => a.codeExecution === false,
+          )
+            ? " (this server can't run tests)."
+            : " and the tests run."}
         </div>
       )}
 
@@ -129,7 +136,11 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
         <div className="title">
           <h1>{session.title}</h1>
           <div className="row wrap small muted">
-            <StatusBadge status={session.status} />
+            {merged && !ended ? (
+              <span className="badge dot tone-ok">merged — task done</span>
+            ) : (
+              <StatusBadge status={session.status} />
+            )}
             <ModeBadge mode={session.executionMode} />
             {worker && <WorkerBadge worker={worker} />}
             <span>
@@ -148,13 +159,14 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
                 Resume
               </button>
             )}
-            <button
-              disabled={!["running", "awaiting_approval", "disconnected"].includes(session.status)}
-              onClick={() => act(() => post(`/api/sessions/${id}/interrupt`))}
-              title="Stop the current turn; the session stays open for more instructions"
-            >
-              Interrupt turn
-            </button>
+            {["running", "awaiting_approval", "disconnected"].includes(session.status) && (
+              <button
+                onClick={() => act(() => post(`/api/sessions/${id}/interrupt`))}
+                title="Stop the current turn; the session stays open for more instructions"
+              >
+                Interrupt turn
+              </button>
+            )}
             <StopButton id={id} ended={ended} act={act} />
           </div>
         )}
@@ -183,19 +195,35 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
         </p>
       )}
       {session.error && <p className="callout danger">Error: {session.error}</p>}
+      <TurnStatus
+        events={events}
+        status={session.status}
+        canContinue={canInstruct && !ended && !merged}
+        sessionId={id}
+        act={act}
+      />
 
       <div className="workspace-grid">
         <section className="card flush">
           <div className="card-head">
             <h3 className="grow">Activity</h3>
-            <span className="muted small">{events.length} events</span>
+            <span className="thread-key" aria-label="Colour key">
+              <span className="k-person">People</span>
+              <span className="k-agent">Agent</span>
+              <span>Pairloom</span>
+            </span>
           </div>
-          <Activity events={events} />
-          {canInstruct && !ended && (
+          <Activity events={events} hosted={!!detail.project?.hosted} />
+          {canInstruct && !ended && !merged && (
             <Composer sessionId={id} isOwner={isOwner} onSent={scheduleRefetch} />
           )}
           {role === "viewer" && (
             <p className="composer muted small">You're a viewer: you can watch but not instruct.</p>
+          )}
+          {merged && canInstruct && !ended && (
+            <p className="composer muted small">
+              These changes are merged, so this task is done. Start a new task for further changes.
+            </p>
           )}
           {ended && canInstruct && (
             <p className="composer muted small">
@@ -216,6 +244,22 @@ export function SessionPage({ id, me }: { id: string; me: Me }) {
           />
         </div>
       </div>
+
+      {detail.project?.hosted && (
+        <section className="card flush">
+          <div className="card-head">
+            <h3 className="grow">Files on this task's branch</h3>
+            <a className="small" href={`#/p/${session.projectId}/files`}>
+              Open project files
+            </a>
+          </div>
+          <FileBrowser
+            projectId={session.projectId}
+            sessionId={id}
+            version={detail.changeSet?.headCommit ?? null}
+          />
+        </section>
+      )}
     </div>
   );
 }
@@ -259,7 +303,7 @@ const HUMAN = new Set([
   "merge.requested",
 ]);
 
-function Activity({ events }: { events: SessionEvent[] }) {
+function Activity({ events, hosted }: { events: SessionEvent[]; hosted: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -268,8 +312,8 @@ function Activity({ events }: { events: SessionEvent[] }) {
   }, [events.length]);
   return (
     <div className="feed card-body" ref={ref} aria-live="polite" aria-relevant="additions">
-      {events.map((e) => (
-        <EventRow key={e.seq} e={e} />
+      {events.filter(showInFeed).map((e) => (
+        <EventRow key={e.seq} e={e} hosted={hosted} />
       ))}
       {events.length === 0 && <p className="muted">Waiting for the first activity…</p>}
     </div>
@@ -294,7 +338,7 @@ function toolSummary(name: string, input: unknown): string {
   return JSON.stringify(args ?? "");
 }
 
-function EventRow({ e }: { e: SessionEvent }) {
+function EventRow({ e, hosted }: { e: SessionEvent; hosted: boolean }) {
   const p = e.payload as any;
   const who =
     e.actorName ??
@@ -317,7 +361,7 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "agent.init":
         return p.simulated
           ? "simulator ready (no model)"
-          : `agent ready · ${p.provider ? `${p.provider} ` : ""}${p.model}${p.claudeCodeVersion ? ` · Claude Code ${p.claudeCodeVersion}` : ""}${p.resumed ? " · resumed from saved transcript" : ""}`;
+          : `ready · ${modelLabel(p.provider, p.model)}${p.claudeCodeVersion ? ` · Claude Code ${p.claudeCodeVersion}` : ""}${p.resumed ? " · resumed from saved transcript" : ""}`;
       case "agent.text":
         return <div className="agent-text">{p.text ?? p.preview}</div>;
       case "agent.tool_use": {
@@ -333,7 +377,11 @@ function EventRow({ e }: { e: SessionEvent }) {
         return (
           <details>
             <summary className={p.isError ? "error" : ""}>
-              {p.isError ? "tool error / denied" : "tool output"}
+              {!p.isError
+                ? "tool output"
+                : /^Denied by/.test(p.output ?? "")
+                  ? "denied by the host"
+                  : "tool error (the agent sees this and can recover)"}
             </summary>
             <pre>{p.output}</pre>
           </details>
@@ -342,7 +390,7 @@ function EventRow({ e }: { e: SessionEvent }) {
         return (
           <span className={p.isError ? "error" : ""}>
             <b>{resultLabel(p.subtype)}</b> <code>{p.subtype}</code>
-            {p.message ? ` — ${p.message}` : ""}
+            {p.message && !String(p.subtype).startsWith("error_provider") ? ` — ${p.message}` : ""}
             <span className="muted small">
               {p.lastTestRun
                 ? ` · agent's last test run: exit ${p.lastTestRun.exitCode}${p.lastTestRun.timedOut ? " (timed out)" : ""}`
@@ -402,7 +450,8 @@ function EventRow({ e }: { e: SessionEvent }) {
       case "merge.completed":
         return (
           <span className="ok">
-            merged as {String(p.mergeCommit).slice(0, 8)} (local, not pushed)
+            merged as {String(p.mergeCommit).slice(0, 8)}{" "}
+            {hosted ? "into Pairloom's copy (not pushed to GitHub)" : "on the worker (not pushed)"}
           </span>
         );
       case "merge.failed":
@@ -414,8 +463,11 @@ function EventRow({ e }: { e: SessionEvent }) {
     }
   })();
   const cls = QUIET.has(e.type) ? "quiet" : HUMAN.has(e.type) ? "human" : "";
+  // The thread colour says who acted: a person, the agent, or Pairloom/the worker.
+  const thread =
+    e.actorKind === "user" ? "t-person" : e.actorKind === "agent" ? "t-agent" : "t-system";
   return (
-    <div className={`event ${cls}`}>
+    <div className={`event ${cls} ${thread}`}>
       <span className="when">{time}</span>
       <span className="what">
         <span className="who">{who}</span> {body}
@@ -597,6 +649,17 @@ function Review({
   const dialog = useDialog();
 
   const inFlux = CHANGES_IN_FLUX.includes(status);
+  const unfinished = turnInfo(events).failure;
+  // The agent's own parse check after its latest edit of each file (never runs the code).
+  const unparseable = useMemo(() => {
+    const latest = new Map<string, string | null>();
+    for (const e of events) {
+      const p = e.payload as { path?: string; parseOk?: boolean; syntaxWarning?: string };
+      if (e.type === "agent.tool_result" && p.path && typeof p.parseOk === "boolean")
+        latest.set(p.path, p.parseOk ? null : (p.syntaxWarning ?? "doesn't parse"));
+    }
+    return [...latest].filter(([, w]) => w) as Array<[string, string]>;
+  }, [events]);
   // Tests count for these changes only if they ran after the latest checkpoint was recorded.
   const lastChanges = [...events].reverse().find((e) => e.type === "changes.updated");
   const lastChecks = [...events]
@@ -606,6 +669,12 @@ function Review({
   const checksCurrent =
     lastChecks?.type === "checks.completed" && (!lastChanges || lastChecks.seq > lastChanges.seq);
   const checksPassed = checksCurrent && (lastChecks!.payload as any).passed;
+
+  // Workers that refuse to run code (Pairloom-hosted ones) can't run the tests at all.
+  const canRunTests = !(detail.worker?.adapters ?? []).some(
+    (a: { codeExecution?: boolean }) => a.codeExecution === false,
+  );
+  const lastReview = [...(cs?.reviews ?? [])].reverse().find((r: any) => r.decision !== "comment");
 
   const reviews: any[] = cs?.reviews ?? [];
   const approvals = useMemo(() => {
@@ -657,7 +726,7 @@ function Review({
     <section className="card flush">
       <div className="card-head">
         <h3 className="grow">Changes for review</h3>
-        {canReview && (
+        {canReview && canRunTests && (
           <button
             className="small"
             disabled={inFlux || checksRunning}
@@ -693,25 +762,43 @@ function Review({
             )}
             {open && (
               <ul className="checklist" aria-label="Merge readiness">
+                {unparseable.map(([path, warning]) => (
+                  <Check
+                    key={path}
+                    ok={false}
+                    bad
+                    label={`${path} looks broken: it didn't parse after the agent's last edit (${warning.replace(/^.*?\((line [^)]*)\).*$/, "$1")}). Don't merge without fixing it.`}
+                  />
+                ))}
                 <Check
-                  ok={!inFlux}
+                  ok={!inFlux && !unfinished}
+                  bad={!inFlux && !!unfinished}
                   label={
                     inFlux
                       ? "Agent is working — changes not final"
-                      : "Agent's turn finished; changes are final"
+                      : unfinished
+                        ? `Agent's last turn didn't finish (${unfinished.short}) — changes may be incomplete`
+                        : "Agent's turn finished; changes are final"
                   }
                 />
-                <Check
-                  ok={!!checksPassed}
-                  bad={checksCurrent && !checksPassed}
-                  label={
-                    checksCurrent
-                      ? checksPassed
-                        ? "Tests passed on these changes"
-                        : "Tests failed on these changes"
-                      : "Tests not run on these changes yet (optional)"
-                  }
-                />
+                {canRunTests ? (
+                  <Check
+                    ok={!!checksPassed}
+                    bad={checksCurrent && !checksPassed}
+                    label={
+                      checksCurrent
+                        ? checksPassed
+                          ? "Tests passed on these changes"
+                          : "Tests failed on these changes"
+                        : "Tests not run on these changes yet (optional)"
+                    }
+                  />
+                ) : (
+                  <Check
+                    ok={false}
+                    label="Tests can't run on this server — read the diff carefully (or run them on your own machine)"
+                  />
+                )}
                 <Check
                   ok={approvals.length > 0}
                   label={
@@ -722,14 +809,30 @@ function Review({
                 />
               </ul>
             )}
+            <div className="row wrap">
+              <a className="button small" href={`/api/changesets/${cs.id}/patch`} download>
+                Download patch
+              </a>
+              {detail.project?.hosted && (
+                <a
+                  className="button small"
+                  href={`/api/projects/${detail.session.projectId}/archive?sessionId=${sessionId}`}
+                  download
+                >
+                  Download this branch
+                </a>
+              )}
+            </div>
             <p className="small muted">
               <code>{cs.branchName}</code> {cs.baseCommit.slice(0, 8)}..{cs.headCommit.slice(0, 8)}{" "}
               · status <b>{cs.status}</b>
               {cs.mergeCommit && (
                 <>
                   {" "}
-                  · merged <code>{cs.mergeCommit.slice(0, 8)}</code> locally on the worker (not
-                  pushed)
+                  · merged <code>{cs.mergeCommit.slice(0, 8)}</code>{" "}
+                  {detail.project?.hosted
+                    ? "into Pairloom's copy of the project (not pushed to GitHub; download it from Files)"
+                    : "locally on the worker (not pushed)"}
                 </>
               )}
             </p>
@@ -773,6 +876,7 @@ function Review({
                 {inFlux && <p className="muted small">Review opens when the agent's turn ends.</p>}
                 <div className="row wrap">
                   <button
+                    className={isOwner && !mergeBlocker ? "" : "primary"}
                     disabled={inFlux || myLatest?.decision === "approve"}
                     title={
                       myLatest?.decision === "approve" ? "You already approved these changes" : ""
@@ -796,6 +900,12 @@ function Review({
                   )}
                 </div>
                 {isOwner && mergeBlocker && <p className="muted small">{mergeBlocker}</p>}
+                {lastReview?.decision === "request_changes" && (
+                  <p className="callout warn small">
+                    {lastReview.reviewerName} requested changes. The agent doesn't read reviews:
+                    tell it what to fix in the instruction box, and its next turn updates this diff.
+                  </p>
+                )}
               </div>
             )}
           </>
@@ -845,11 +955,204 @@ function Diff({ text }: { text: string }) {
 }
 
 function resultLabel(subtype: string): string {
-  if (subtype === "end_turn") return "finished its turn (unverified until tests and review):";
+  if (subtype === "end_turn") return "finished its turn (unverified until reviewed):";
   if (subtype === "success") return "turn ended:";
   if (subtype === "interrupted") return "turn interrupted:";
   if (subtype.startsWith("error_max") || subtype === "error_budget")
     return "turn stopped by a limit:";
   if (subtype.startsWith("error_provider")) return "turn failed (model provider error):";
   return "turn failed:";
+}
+
+/** "gpt-oss-120b via Groq"; a non-default endpoint is named as such, never as the provider. */
+/**
+ * Routine status changes (starting, running, idle…) are already shown by the header badge, so
+ * the feed keeps only the ones a person needs to notice: failures, disconnects, interruptions.
+ */
+const ROUTINE_STATUS = new Set([
+  "pending",
+  "starting",
+  "running",
+  "awaiting_approval",
+  "idle",
+  "stopping",
+]);
+/** Plain-language reason a turn ended without the model finishing its answer. */
+function turnFailure(p: { subtype: string; message?: string }): { short: string; long: string } {
+  const st = p.subtype;
+  if (st === "error_max_time")
+    return {
+      short: "ran out of time",
+      long: "it ran past its time limit and was stopped. On the free model tier most of that time is spent waiting for the provider's per-minute limit.",
+    };
+  if (st === "error_max_iterations" || st === "error_max_model_calls" || st === "error_budget")
+    return { short: "hit a limit", long: `it hit a safety limit: ${p.message ?? st}.` };
+  if (st === "error_session_token_budget")
+    return {
+      short: "task budget used up",
+      long: "this task has used its total token budget across all its turns, so continuing it won't run. Review what's there, or start a new, smaller task.",
+    };
+  if (st === "error_provider_timeout")
+    return {
+      short: "model timed out",
+      long: "the model didn't answer in time. That's usually temporary; try continuing in a minute.",
+    };
+  if (/tokens per day|requests per day|\((TPD|RPD)\)/.test(p.message ?? ""))
+    return {
+      short: "daily model allowance used up",
+      long: "this server's free daily allowance of model tokens is used up. It refills gradually; try again later (the provider's message below says roughly when).",
+    };
+  if (st === "error_provider_rate_limited")
+    return {
+      short: "model provider busy",
+      long: "the model provider's rate limit refused the request. The exact wait is in the activity; try again after it.",
+    };
+  if (
+    st === "error_provider_quota_or_billing" ||
+    st === "error_provider_auth" ||
+    st === "error_provider_missing_credentials"
+  )
+    return {
+      short: "model unavailable",
+      long: "the server's model account refused the request (key or quota). Ask the person who runs this Pairloom server.",
+    };
+  if (st.startsWith("error_provider"))
+    return { short: "model error", long: "the model call failed; the error is in the activity." };
+  if (st === "error_token_budget")
+    return {
+      short: "hit its token budget",
+      long: "it used this turn's token budget, which stops one task from spending the whole day's free model allowance.",
+    };
+  if (st === "error_no_progress")
+    return {
+      short: "went in circles",
+      long: "it kept repeating the same steps without making progress, so Pairloom stopped it.",
+    };
+  if (st === "interrupted")
+    return { short: "interrupted", long: "it was interrupted before it finished." };
+  if (st === "error_output_truncated")
+    return { short: "answer cut off", long: "the model's answer was cut off by its output limit." };
+  return { short: "failed", long: `it failed: ${p.message ?? st}.` };
+}
+
+/** What the latest turn is doing, from the event log alone (so it survives a reload). */
+function turnInfo(events: SessionEvent[]) {
+  let start: SessionEvent | undefined;
+  let result: SessionEvent | undefined;
+  let pace: SessionEvent | undefined;
+  for (const e of events) {
+    if (e.type === "instruction.submitted") {
+      // A newer instruction supersedes the old outcome (and stops a second "continue").
+      result = undefined;
+    } else if (e.type === "instruction.delivered") {
+      start = e;
+      result = undefined;
+      pace = undefined;
+    } else if (e.type === "agent.result") result = e;
+    else if (
+      e.type === "system.notice" &&
+      /^Waiting \d+s for /.test((e.payload as any).message ?? "")
+    )
+      pace = e;
+    else if (e.type === "agent.tool_use" || e.type === "agent.text") pace = undefined;
+  }
+  const r = result?.payload as { subtype: string; isError: boolean; message?: string } | undefined;
+  return {
+    start,
+    result,
+    pace,
+    failure: r && r.isError ? turnFailure(r) : null,
+  };
+}
+
+function TurnStatus({
+  events,
+  status,
+  canContinue,
+  sessionId,
+  act,
+}: {
+  events: SessionEvent[];
+  status: SessionStatus;
+  canContinue: boolean;
+  sessionId: string;
+  act: Act;
+}) {
+  const info = turnInfo(events);
+  const [sending, setSending] = useState(false);
+  const edited: string[] = ((info.result?.payload as any)?.filesEdited ?? []).slice(0, 20);
+  const working = (status === "running" || status === "awaiting_approval") && !info.result;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!working) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [working]);
+  if (working && info.start) {
+    const secs = Math.max(0, Math.round((Date.now() - Date.parse(info.start.createdAt)) / 1000));
+    const paceSecs = info.pace
+      ? Number(/Waiting (\d+)s/.exec((info.pace.payload as any).message)?.[1])
+      : 0;
+    const paceLeft = info.pace
+      ? Math.max(0, Math.round(paceSecs - (Date.now() - Date.parse(info.pace.createdAt)) / 1000))
+      : 0;
+    return (
+      <p className="callout turn-live" role="status">
+        <span className="spinner" /> The agent is working ({formatDuration(secs)} so far).
+        {info.pace && paceLeft > 0
+          ? ` Waiting about ${paceLeft}s for the model provider's per-minute limit before its next step.`
+          : status === "awaiting_approval"
+            ? " It's waiting for the host to approve a tool call."
+            : ""}{" "}
+        You can leave this page; the task keeps running.
+      </p>
+    );
+  }
+  if (!info.failure || status === "running") return null;
+  return (
+    <div className="callout warn turn-failed" role="status">
+      <p>
+        <b>The agent's last turn didn't finish</b>: {info.failure.long} Any edits it made are kept
+        on this task's branch and shown under Changes for review; they may be incomplete.
+      </p>
+      {canContinue && (
+        <p className="row wrap">
+          <button
+            disabled={sending}
+            onClick={async () => {
+              setSending(true);
+              await act(
+                () =>
+                  post(`/api/sessions/${sessionId}/instructions`, {
+                    text:
+                      "Continue where you left off and finish the task. " +
+                      (edited.length
+                        ? `You already changed ${edited.join(", ")}; those edits are in place, so don't redo them. `
+                        : "") +
+                      "Do only what is still missing, then reply with a summary.",
+                  }),
+                "Asked the agent to continue",
+              );
+              setSending(false);
+            }}
+          >
+            Ask the agent to continue
+          </button>
+          <span className="muted small">
+            Starts one new turn from the current files. Nothing reruns automatically.
+          </span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+function formatDuration(secs: number) {
+  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
+function showInFeed(e: SessionEvent): boolean {
+  if (e.type !== "session.status") return true;
+  const p = e.payload as { status?: string; error?: string };
+  return !ROUTINE_STATUS.has(p.status ?? "") || Boolean(p.error);
 }

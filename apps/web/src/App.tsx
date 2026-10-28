@@ -8,6 +8,7 @@ import { HomePage } from "./pages/Home.js";
 import { WorkspacePage } from "./pages/Workspace.js";
 import { ProjectPage } from "./pages/Project.js";
 import { SessionPage } from "./pages/Session.js";
+import { AccountPage } from "./pages/Account.js";
 import {
   Avatar,
   CrumbProvider,
@@ -68,8 +69,15 @@ function Shell() {
         <span className="spacer" />
         <ConnectionDot />
         <div className="user-menu">
-          <Avatar name={me.displayName} id={me.id} />
-          <span className="name">{me.displayName}</span>
+          <a
+            href="#/account"
+            className="row"
+            style={{ gap: 8, color: "inherit" }}
+            title="Your account"
+          >
+            <Avatar name={me.displayName} id={me.id} />
+            <span className="name">{me.displayName}</span>
+          </a>
           <button
             className="link"
             onClick={async () => {
@@ -83,7 +91,15 @@ function Shell() {
         </div>
       </header>
       <main className="content">
-        <Routed route={route} me={me} />
+        <Routed
+          route={route}
+          me={me}
+          onSignOut={async () => {
+            await post("/api/auth/logout");
+            setMe(null);
+            navigate("/");
+          }}
+        />
       </main>
     </div>
   );
@@ -101,11 +117,12 @@ function ConnectionDot() {
   );
 }
 
-function Routed({ route, me }: { route: string[]; me: Me }) {
+function Routed({ route, me, onSignOut }: { route: string[]; me: Me; onSignOut: () => void }) {
   const [a, b] = route;
+  if (a === "account") return <AccountPage me={me} onSignOut={onSignOut} />;
   if (a === "invite" && b) return <InvitePage token={b} />;
   if (a === "w" && b) return <WorkspacePage id={b} me={me} />;
-  if (a === "p" && b) return <ProjectPage id={b} me={me} />;
+  if (a === "p" && b) return <ProjectPage id={b} me={me} routeTab={route[2]} />;
   if (a === "s" && b) return <SessionPage id={b} me={me} />;
   return <HomePage me={me} />;
 }

@@ -76,6 +76,12 @@ export function loadHarnessLimits(env: NodeJS.ProcessEnv = process.env): Harness
     commandTimeoutMs:
       numEnv(env, "AGENT_COMMAND_TIMEOUT_SECONDS", DEFAULT_LIMITS.commandTimeoutMs / 1000) * 1000,
     maxContextChars: numEnv(env, "AGENT_MAX_CONTEXT_CHARS", defaultContextChars(env)),
+    maxTokensPerTurn: numEnv(env, "AGENT_MAX_TOKENS_PER_TURN", DEFAULT_LIMITS.maxTokensPerTurn),
+    maxTokensPerSession: numEnv(
+      env,
+      "AGENT_MAX_TOKENS_PER_SESSION",
+      DEFAULT_LIMITS.maxTokensPerSession,
+    ),
   };
 }
 

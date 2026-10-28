@@ -11,7 +11,12 @@ import type { Workspace } from "./git.js";
 import type { ServerLink } from "./link.js";
 import type { AgentAdapter, AgentRun, PermissionAnswer, PermissionAsk } from "./adapters/types.js";
 import { join } from "node:path";
-import { loadProjectSettings, runCommand } from "./harness/tools.js";
+import {
+  CODE_EXECUTION_DISABLED,
+  codeExecutionAllowed,
+  loadProjectSettings,
+  runCommand,
+} from "./harness/tools.js";
 
 interface LiveSession {
   id: string;
@@ -154,6 +159,8 @@ export class SessionManager {
         return;
       }
       case "run_checks": {
+        // Refuse before announcing a run, so nobody sees "tests running" for tests that won't run.
+        if (!codeExecutionAllowed()) throw new Error(CODE_EXECUTION_DISABLED);
         const s = this.sessions.get(sessionId);
         if (s?.status === "running")
           throw new Error("Agent is mid-turn; run checks when it is idle");

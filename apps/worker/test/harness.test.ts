@@ -443,3 +443,263 @@ describe("harness: limits, cancellation and recovery", () => {
     await t.run.stop();
   });
 });
+
+describe("harness: steering a model that repeats itself", () => {
+  it("honours 1-based line_start/line_end on read_file", async () => {
+    const t = await setup(({ n }) =>
+      n === 1
+        ? toolCalls({
+            name: "read_file",
+            args: { path: "src/cart.js", line_start: 3, line_end: 4 },
+          })
+        : text("done"),
+    );
+    t.run.send("read");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    const out = t.events.find((e) => e.type === "agent.tool_result")!.payload.output as string;
+    expect(out.split("\n")).toHaveLength(2);
+    expect(out).toMatch(/^ {3}3\| /);
+  });
+
+  it("answers an identical repeated read with a pointer until a file changes", async () => {
+    const read = { name: "read_file", args: { path: "src/cart.js" } };
+    const t = await setup(({ n }) => {
+      if (n <= 2) return toolCalls(read);
+      if (n === 3)
+        return toolCalls({ name: "write_file", args: { path: "notes.txt", content: "x" } });
+      if (n === 4) return toolCalls(read);
+      return text("done");
+    });
+    t.run.send("read twice");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    const outs = t.events
+      .filter((e) => e.type === "agent.tool_result")
+      .map((e) => e.payload.output as string);
+    expect(outs[0]).toMatch(/export function/);
+    expect(outs[1]).toMatch(/Same call as earlier in this turn/);
+    // After a write, the same read returns real content again.
+    expect(outs[3]).toMatch(/export function/);
+    expect(t.turns[0]).toEqual({ subtype: "end_turn", isError: false });
+  });
+
+  it("keeps the last step for a tools-off summary of done and remaining work", async () => {
+    const t = await setup(
+      ({ n, body }) =>
+        !body.tools
+          ? text("Changed notes.txt. Still left: the tests.")
+          : n === 1
+            ? toolCalls({ name: "write_file", args: { path: "notes.txt", content: "x" } })
+            : toolCalls({ name: "list_files", args: { path: `p${n}` } }),
+      { limits: { maxIterationsPerTurn: 4 } },
+    );
+    t.run.send("loop");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    expect(t.stub.requests).toHaveLength(4);
+    const last = t.stub.requests[3]!.body;
+    expect(last.tools).toBeUndefined();
+    expect(JSON.stringify(last.messages.at(-1))).toMatch(/this turn: notes\.txt/);
+    const r = t.result();
+    expect(r.subtype).toBe("error_max_iterations");
+    expect(r.isError).toBe(true);
+    expect(r.filesEdited).toEqual(["notes.txt"]);
+    expect(t.events.filter((e) => e.type === "agent.text").at(-1)!.payload.text).toMatch(
+      /Still left/,
+    );
+  });
+
+  it("stops a model that keeps repeating the same call, with a clear reason", async () => {
+    const t = await setup(({ body }) =>
+      !body.tools ? text("I was stuck.") : toolCalls({ name: "list_files", args: {} }),
+    );
+    t.run.send("loop");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    expect(t.result().subtype).toBe("error_no_progress");
+    expect(t.result().message).toMatch(/without making progress/);
+    // 1 real call + 3 answered "same as before" + 1 closing summary.
+    expect(t.stub.requests).toHaveLength(5);
+  });
+
+  it("stops at the per-turn token budget so one task can't spend the day's allowance", async () => {
+    const t = await setup(
+      ({ n, body }) =>
+        !body.tools ? text("summary") : toolCalls({ name: "list_files", args: { path: `p${n}` } }),
+      { limits: { maxTokensPerTurn: 2500 } },
+    );
+    t.run.send("spend");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    expect(t.result().subtype).toBe("error_token_budget");
+    // Each stub call reports 1100 tokens: 3 calls cross 2500, then the summary.
+    expect(t.stub.requests).toHaveLength(4);
+  });
+
+  it("continuing after an unfinished turn keeps the earlier work and history", async () => {
+    let turn = 1;
+    const t = await setup(
+      ({ body }) => {
+        if (!body.tools) return text("Wrote notes.txt; tests still missing.");
+        if (turn === 1)
+          return toolCalls({ name: "write_file", args: { path: "notes.txt", content: "x" } });
+        return text("Added the rest.");
+      },
+      { limits: { maxIterationsPerTurn: 2 } },
+    );
+    t.run.send("first");
+    await until(() => t.turns.length > 0, 10000, "turn 1");
+    expect(t.turns[0]!.subtype).toBe("error_max_iterations");
+    expect(readFileSync(join(t.cwd, "notes.txt"), "utf8")).toBe("x");
+    turn = 2;
+    t.run.send("Continue where you left off");
+    await until(() => t.turns.length > 1, 10000, "turn 2");
+    expect(t.turns[1]).toEqual({ subtype: "end_turn", isError: false });
+    // The continuation request carries the first turn (its write and summary), not a fresh start.
+    const msgs = JSON.stringify(t.stub.requests.at(-1)!.body.messages);
+    expect(msgs).toMatch(/"first"/);
+    expect(msgs).toMatch(/tests still missing/);
+    // The partial edit was not redone or lost.
+    expect(readFileSync(join(t.cwd, "notes.txt"), "utf8")).toBe("x");
+  });
+
+  it("estimates tokens when the provider reports no usage, so the budget still applies", async () => {
+    const noUsage = (r: any) => {
+      delete r.body.usage;
+      return r;
+    };
+    const t = await setup(
+      ({ n, body }) =>
+        noUsage(
+          !body.tools
+            ? text("summary")
+            : toolCalls({ name: "list_files", args: { path: `p${n}` } }),
+        ),
+      { limits: { maxTokensPerTurn: 3000 } },
+    );
+    t.run.send("spend");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    const r = t.result();
+    expect(r.subtype).toBe("error_token_budget");
+    expect(r.usageEstimated).toBe(true);
+    expect(r.tokensThisTurn).toBeGreaterThanOrEqual(3000);
+  });
+
+  it("a task's total budget carries across turns; a continue at the cap makes no model call", async () => {
+    const t = await setup(
+      ({ n, body }) =>
+        !body.tools ? text("summary") : toolCalls({ name: "list_files", args: { path: `p${n}` } }),
+      { limits: { maxTokensPerSession: 2500 } },
+    );
+    t.run.send("first");
+    await until(() => t.turns.length > 0, 10000, "turn 1");
+    expect(t.result().subtype).toBe("error_session_token_budget");
+    const before = t.stub.requests.length;
+    t.run.send("Continue where you left off");
+    await until(() => t.turns.length > 1, 10000, "turn 2");
+    expect(t.result().subtype).toBe("error_session_token_budget");
+    expect(t.stub.requests.length).toBe(before);
+  });
+
+  it("a failed closing summary is reported, and the turn still ends unfinished", async () => {
+    const t = await setup(
+      ({ n, body }) =>
+        !body.tools
+          ? error(500, "boom")
+          : toolCalls({ name: "list_files", args: { path: `p${n}` } }),
+      { limits: { maxIterationsPerTurn: 3 }, provider: { maxRetries: 0 } },
+    );
+    t.run.send("loop");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    expect(t.result()).toMatchObject({ subtype: "error_max_iterations", isError: true });
+    const notice = t.events.find((e) => e.type === "system.notice");
+    expect(notice!.payload.message).toMatch(/closing summary couldn't be generated/);
+  });
+
+  it("warns the model when an edit leaves the file unparseable (the real run's bug)", async () => {
+    // What gpt-oss did on 2026-10-28: inserted a function inside subtotalCents' body.
+    const t = await setup(({ n }) =>
+      n === 1
+        ? toolCalls({
+            name: "edit_file",
+            args: {
+              path: "src/cart.js",
+              old_string: "export function subtotalCents(cart) {\n",
+              new_string:
+                "export function subtotalCents(cart) {\n}\n\nexport function itemCount(cart) {\n  return cart.items.reduce((s, i) => s + i.quantity, 0);\n}\n",
+            },
+          })
+        : text("done"),
+    );
+    t.run.send("edit");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    const out = t.events.find((e) => e.type === "agent.tool_result")!.payload.output as string;
+    expect(out).toMatch(/WARNING: src\/cart\.js no longer parses \(line \d+/);
+    // Reviewers get the verdict as its own field, independent of display truncation.
+    const payload = t.events.find((e) => e.type === "agent.tool_result")!.payload;
+    expect(payload).toMatchObject({ path: "src/cart.js", parseOk: false });
+    expect(payload.syntaxWarning).toMatch(/no longer parses/);
+    // The model receives it too (it's in the tool message), not only the activity feed.
+    expect(JSON.stringify(t.stub.requests[1]!.body.messages.at(-1))).toMatch(/no longer parses/);
+  });
+
+  it("a successful edit returns the changed lines with numbers", async () => {
+    const t = await setup(({ n }) =>
+      n === 1
+        ? toolCalls({
+            name: "edit_file",
+            args: {
+              path: "src/cart.js",
+              old_string: "export function subtotalCents",
+              new_string:
+                "export function itemCount(cart) {\n  return 0;\n}\n\nexport function subtotalCents",
+            },
+          })
+        : text("done"),
+    );
+    t.run.send("edit");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    const out = t.events.find((e) => e.type === "agent.tool_result")!.payload.output as string;
+    expect(out).toMatch(/^Edited src\/cart\.js\. Lines \d+-\d+ now read:/);
+    expect(out).toMatch(/\d+\| export function itemCount\(cart\) \{/);
+    expect(out).not.toMatch(/WARNING/);
+    expect(t.result().filesEdited).toEqual(["src/cart.js"]);
+  });
+
+  it("treats the same whole-file read in different spellings as a repeat", async () => {
+    const t = await setup(({ n }) =>
+      n === 1
+        ? toolCalls({
+            name: "read_file",
+            args: { path: "src/cart.js", line_start: 1, line_end: 400 },
+          })
+        : n === 2
+          ? toolCalls({ name: "read_file", args: { path: "./src/cart.js", offset: 0, limit: 200 } })
+          : text("done"),
+    );
+    t.run.send("read");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    const outs = t.events
+      .filter((e) => e.type === "agent.tool_result")
+      .map((e) => e.payload.output as string);
+    expect(outs[0]).toMatch(/export function/);
+    expect(outs[1]).toMatch(/Same call as earlier in this turn/);
+  });
+
+  it("an ambiguous edit says where the matches are", async () => {
+    const t = await setup(({ n }) =>
+      n === 1
+        ? toolCalls({
+            name: "edit_file",
+            args: { path: "src/cart.js", old_string: "export", new_string: "x" },
+          })
+        : text("done"),
+    );
+    t.run.send("edit");
+    await until(() => t.turns.length > 0, 10000, "turn end");
+    const r = t.events.find((e) => e.type === "agent.tool_result")!.payload;
+    expect(r.isError).toBe(true);
+    expect(r.output).toMatch(/starting at lines \d+, \d+/);
+    // Nothing was changed.
+    expect(readFileSync(join(t.cwd, "src/cart.js"), "utf8")).toBe(
+      readFileSync(join(SAMPLE, "src/cart.js"), "utf8"),
+    );
+    expect(t.result().filesEdited).toEqual([]);
+  });
+});

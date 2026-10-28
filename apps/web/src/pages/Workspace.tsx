@@ -12,6 +12,7 @@ import {
   useDialog,
 } from "../ui.js";
 import { RoleBadge } from "./badges.js";
+import { NewProjectForm } from "./newProject.js";
 import type { Me } from "../App.js";
 
 const ROLE_HELP: Record<string, string> = {
@@ -38,7 +39,6 @@ export function WorkspacePage({ id, me }: { id: string; me: Me }) {
     <div className="stack loose">
       <div className="page-head">
         <div className="title">
-          <span className="eyebrow">Team</span>
           <h1>{ws.name}</h1>
           <p className="muted">
             You're {ws.role === "owner" ? "an" : "a"} <b>{ws.role}</b>. {ROLE_HELP[ws.role]}.
@@ -67,9 +67,6 @@ export function WorkspacePage({ id, me }: { id: string; me: Me }) {
                       base branch <code>{p.defaultBranch}</code>
                     </span>
                   </div>
-                  <span aria-hidden className="muted">
-                    →
-                  </span>
                 </a>
               ))}
             </div>
@@ -84,40 +81,10 @@ export function WorkspacePage({ id, me }: { id: string; me: Me }) {
 }
 
 function AddProject({ workspaceId }: { workspaceId: string }) {
-  const [name, setName] = useState("");
-  const [branch, setBranch] = useState("main");
-  const { busy, run } = useAction();
   return (
-    <form
-      className="composer"
-      onSubmit={async (e) => {
-        e.preventDefault();
-        const p = await run(() =>
-          post(`/api/workspaces/${workspaceId}/projects`, {
-            name,
-            defaultBranch: branch,
-            repoUrl: null,
-          }),
-        );
-        if (p) navigate(`/p/${p.id}`);
-      }}
-    >
-      <div className="form-grid">
-        <label>
-          Project name
-          <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} />
-        </label>
-        <label>
-          Base branch
-          <input value={branch} onChange={(e) => setBranch(e.target.value)} required />
-        </label>
-      </div>
-      <div className="row end">
-        <button type="submit" className="primary" disabled={busy}>
-          Add project
-        </button>
-      </div>
-    </form>
+    <div className="composer">
+      <NewProjectForm workspaceId={workspaceId} />
+    </div>
   );
 }
 

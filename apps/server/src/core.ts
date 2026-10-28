@@ -80,6 +80,7 @@ interface SessionRow {
   created_at: string;
   updated_at: string;
   ended_at: string | null;
+  last_outcome: string | null;
   workspace_id: string;
   host_name: string;
 }
@@ -92,6 +93,7 @@ interface WorkerRow {
   adapters_json: string;
   last_seen_at: string | null;
   revoked_at: string | null;
+  hosted: number;
   workspace_id: string;
 }
 
@@ -297,24 +299,88 @@ export class Core {
     userId: string,
     workspaceId: string,
     input: { name: string; repoUrl?: string | null; defaultBranch: string },
+    opts: { hosted?: boolean } = {},
   ) {
     this.requireRole(userId, workspaceId, "owner");
     const id = newId("prj");
-    this.db
+    let hostedWorkerId: string | null = null;
+    tx(this.db, () => {
+      this.db
+        .prepare(
+          `INSERT INTO projects (id, workspace_id, name, repo_url, default_branch, created_by, created_at)
+           VALUES (?,?,?,?,?,?,?)`,
+        )
+        .run(
+          id,
+          workspaceId,
+          input.name,
+          input.repoUrl ?? null,
+          input.defaultBranch,
+          userId,
+          nowIso(),
+        );
+      if (opts.hosted) {
+        hostedWorkerId = newId("wkr");
+        // The real token is issued at each start (rotateWorkerToken); this one is never used.
+        this.db
+          .prepare(
+            `INSERT INTO workers (id, project_id, name, kind, token_hash, created_by, created_at, hosted)
+             VALUES (?,?,?,?,?,?,?,1)`,
+          )
+          .run(
+            hostedWorkerId,
+            id,
+            "Pairloom workspace",
+            "cloud",
+            sha256(newWorkerToken()),
+            userId,
+            nowIso(),
+          );
+      }
+    });
+    return { id, ...input, hostedWorkerId };
+  }
+
+  /** Undoes createProject when its hosted repository could not be set up. */
+  discardNewProject(projectId: string) {
+    this.db.prepare("DELETE FROM workers WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+  }
+
+  /** Records the branch a hosted repository actually has (e.g. a cloned repo's default). */
+  setProjectBranch(projectId: string, branch: string) {
+    this.db.prepare("UPDATE projects SET default_branch = ? WHERE id = ?").run(branch, projectId);
+  }
+
+  /** The branch a member may browse: the project's base branch, or one of its task branches. */
+  projectFileRef(userId: string, projectId: string, sessionId?: string) {
+    const p = this.projectRow(projectId);
+    this.requireRole(userId, p.workspace_id, "viewer");
+    const hosted = Boolean(
+      this.db
+        .prepare("SELECT 1 FROM workers WHERE project_id = ? AND hosted = 1 AND revoked_at IS NULL")
+        .get(projectId),
+    );
+    if (!sessionId) return { ref: p.default_branch, hosted };
+    const s = this.db
+      .prepare("SELECT branch_name FROM agent_sessions WHERE id = ? AND project_id = ?")
+      .get(sessionId, projectId) as { branch_name: string } | undefined;
+    if (!s) throw new HttpError(404, "Not found");
+    return { ref: s.branch_name, hosted };
+  }
+
+  listHostedWorkers(): Array<{ id: string; projectId: string }> {
+    return this.db
       .prepare(
-        `INSERT INTO projects (id, workspace_id, name, repo_url, default_branch, created_by, created_at)
-         VALUES (?,?,?,?,?,?,?)`,
+        "SELECT id, project_id AS projectId FROM workers WHERE hosted = 1 AND revoked_at IS NULL",
       )
-      .run(
-        id,
-        workspaceId,
-        input.name,
-        input.repoUrl ?? null,
-        input.defaultBranch,
-        userId,
-        nowIso(),
-      );
-    return { id, ...input };
+      .all() as Array<{ id: string; projectId: string }>;
+  }
+
+  rotateWorkerToken(workerId: string): string {
+    const token = newWorkerToken();
+    this.db.prepare("UPDATE workers SET token_hash = ? WHERE id = ?").run(sha256(token), workerId);
+    return token;
   }
 
   private projectRow(projectId: string) {
@@ -400,6 +466,7 @@ export class Core {
         )
         .all(p.workspace_id),
       workers: this.listWorkers(p.id),
+      hosted: this.listWorkers(p.id).some((w) => w.hosted && !w.revoked),
       sessions: this.listSessions(p.id),
     };
   }
@@ -464,6 +531,7 @@ export class Core {
       lastSeenAt: w.last_seen_at,
       adapters: JSON.parse(w.adapters_json) as AdapterInfo[],
       revoked: Boolean(w.revoked_at),
+      hosted: Boolean(w.hosted),
     };
   }
 
@@ -510,6 +578,7 @@ export class Core {
       createdAt: s.created_at,
       updatedAt: s.updated_at,
       endedAt: s.ended_at,
+      lastOutcome: s.last_outcome ?? null,
     };
   }
 
@@ -535,10 +604,13 @@ export class Core {
     const { session, role } = this.requireSession(userId, sessionId, "viewer");
     const project = this.db
       .prepare(
-        `SELECT p.id, p.name, w.id AS workspaceId, w.name AS workspaceName
+        `SELECT p.id, p.name, w.id AS workspaceId, w.name AS workspaceName,
+           EXISTS (SELECT 1 FROM workers k WHERE k.project_id = p.id AND k.hosted = 1
+                   AND k.revoked_at IS NULL) AS hosted
          FROM projects p JOIN workspaces w ON w.id = p.workspace_id WHERE p.id = ?`,
       )
-      .get(session.project_id);
+      .get(session.project_id) as Record<string, unknown> | undefined;
+    if (project) project.hosted = Boolean(project.hosted);
     return {
       session: this.sessionDto(session),
       role,
@@ -822,7 +894,24 @@ export class Core {
         actorKind: "system",
         payload: { level: "error", message: `Instruction not delivered: ${error}` },
       });
+      return;
     }
+    // Every other rejected command is reported too, so no button press silently does nothing.
+    const what: Partial<Record<SessionCommand["kind"], string>> = {
+      run_checks: "Tests didn't run",
+      merge: "Merge didn't happen",
+      interrupt: "Couldn't interrupt the turn",
+      stop: "Couldn't stop the task",
+      refresh_changes: "Couldn't refresh the changes",
+      permission_decision: "Couldn't deliver the approval decision",
+    };
+    const label = what[command.kind];
+    if (label)
+      this.appendEvent(sessionId, {
+        type: "system.notice",
+        actorKind: "system",
+        payload: { level: "error", message: `${label}: ${error}` },
+      });
   }
 
   // ----------------------------------------------------- worker lifecycle
@@ -909,8 +998,12 @@ export class Core {
         });
       }
       if (command.kind === "merge") {
+        // The worker refused before touching git (e.g. the agent was mid-turn): nothing was
+        // merged, so the change set goes back to open with the reason and can be merged again.
         this.db
-          .prepare("UPDATE change_sets SET status = 'merge_failed', merge_error = ? WHERE id = ?")
+          .prepare(
+            "UPDATE change_sets SET status = 'open', merge_error = ? WHERE id = ? AND status = 'merging'",
+          )
           .run(error ?? "Merge rejected", command.changeSetId);
       }
       return;
@@ -973,7 +1066,13 @@ export class Core {
       default: {
         const json = JSON.stringify(ev.payload);
         if (json.length > LIMITS.agentTextMaxChars * 2) {
-          return { truncated: true, preview: json.slice(0, LIMITS.agentTextMaxChars) };
+          // Keep the small fields reviewers rely on (e.g. the parse check) when trimming.
+          const keep: Record<string, unknown> = {};
+          for (const k of ["toolUseId", "isError", "path", "parseOk", "syntaxWarning"]) {
+            const v = (ev.payload as Record<string, unknown>)[k];
+            if (typeof v === "boolean" || (typeof v === "string" && v.length <= 300)) keep[k] = v;
+          }
+          return { ...keep, truncated: true, preview: json.slice(0, LIMITS.agentTextMaxChars) };
         }
         return ev.payload;
       }
@@ -986,6 +1085,14 @@ export class Core {
     payload: Record<string, unknown>,
   ) {
     switch (type) {
+      case "agent.result": {
+        const subtype = typeof payload.subtype === "string" ? payload.subtype.slice(0, 64) : null;
+        this.db
+          .prepare("UPDATE agent_sessions SET last_outcome = ? WHERE id = ?")
+          .run(subtype, s.id);
+        this.emitSession(s.id);
+        return;
+      }
       case "session.status": {
         const p = payload as {
           status: SessionStatus;
@@ -1119,6 +1226,9 @@ export class Core {
     }
     if (TERMINAL_STATUSES.includes(session.status)) {
       throw new HttpError(409, `Session is ${session.status}`);
+    }
+    if (this.latestChangeSet(sessionId)?.status === "merged") {
+      throw new HttpError(409, "This task's changes are merged; start a new task for more work");
     }
     this.rateLimit(userId);
     const id = newId("ins");
@@ -1364,6 +1474,31 @@ export class Core {
       createdAt: c.created_at as string,
       reviews,
     };
+  }
+
+  /** A change set's diff for download, for any member of its project. */
+  changeSetForDownload(userId: string, changeSetId: string) {
+    const c = this.db
+      .prepare(
+        `SELECT c.id, c.session_id, c.base_commit, c.head_commit, c.diff, c.diff_truncated,
+                s.project_id, s.title
+         FROM change_sets c JOIN agent_sessions s ON s.id = c.session_id WHERE c.id = ?`,
+      )
+      .get(changeSetId) as
+      | {
+          id: string;
+          session_id: string;
+          base_commit: string;
+          head_commit: string;
+          diff: string;
+          diff_truncated: number;
+          project_id: string;
+          title: string;
+        }
+      | undefined;
+    if (!c) throw new HttpError(404, "Not found");
+    this.requireSession(userId, c.session_id, "viewer");
+    return c;
   }
 
   private changeSetRow(changeSetId: string) {

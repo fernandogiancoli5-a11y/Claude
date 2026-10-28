@@ -4,6 +4,7 @@ import { get, post } from "../api.js";
 import { navigate } from "../router.js";
 import { Empty, ErrorState, Loading, timeAgo, useAction, useCrumbs } from "../ui.js";
 import { RoleBadge, StatusBadge } from "./badges.js";
+import { NewProjectForm, serverConfig } from "./newProject.js";
 import type { Me } from "../App.js";
 
 interface DashWorkspace {
@@ -66,7 +67,6 @@ export function HomePage({ me }: { me: Me }) {
     <div className="stack loose">
       <div className="page-head">
         <div className="title">
-          <span className="eyebrow">Dashboard</span>
           <h1>Hi, {me.displayName.replace(/\s*\(.*\)$/, "")}</h1>
           <p className="muted">
             {firstRun
@@ -129,7 +129,7 @@ export function HomePage({ me }: { me: Me }) {
         </>
       )}
 
-      <Teams workspaces={data.workspaces} />
+      {!firstRun && <Teams workspaces={data.workspaces} />}
     </div>
   );
 }
@@ -178,10 +178,6 @@ function ProjectCard({ p }: { p: DashProject }) {
 
 function NewProject({ workspaces }: { workspaces: DashWorkspace[] }) {
   const [open, setOpen] = useState(false);
-  const [workspaceId, setWorkspaceId] = useState(workspaces[0]!.id);
-  const [name, setName] = useState("");
-  const [branch, setBranch] = useState("main");
-  const { busy, run } = useAction();
   if (!open)
     return (
       <button className="primary" onClick={() => setOpen(true)}>
@@ -189,78 +185,87 @@ function NewProject({ workspaces }: { workspaces: DashWorkspace[] }) {
       </button>
     );
   return (
-    <form
-      className="card stack"
-      style={{ width: "100%" }}
-      onSubmit={async (e) => {
-        e.preventDefault();
-        const p = await run(() =>
-          post(`/api/workspaces/${workspaceId}/projects`, {
-            name,
-            defaultBranch: branch,
-            repoUrl: null,
-          }),
-        );
-        if (p) navigate(`/p/${p.id}`);
-      }}
-    >
+    <section className="card stack" style={{ width: "100%" }}>
       <h3>New project</h3>
-      <div className="form-grid">
-        <label>
-          Team
-          <select value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}>
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Project name
-          <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
-        </label>
-        <label>
-          Base branch
-          <input value={branch} onChange={(e) => setBranch(e.target.value)} required />
-        </label>
-      </div>
-      <div className="row end">
-        <button type="button" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-        <button type="submit" className="primary" disabled={busy}>
-          Create project
-        </button>
-      </div>
-    </form>
+      <NewProjectForm workspaces={workspaces} onCancel={() => setOpen(false)} />
+    </section>
   );
 }
 
+/** First screen for a brand-new user: the one thing to do next is create a team. */
 function FirstRun() {
-  return (
-    <section className="card stack">
-      <h2>Get started</h2>
-      <ol className="steps">
-        {[
-          ["Create a team workspace", "Your teammates join it through invite links."],
-          ["Add a project", "A project points at one git repository and its base branch."],
+  const [name, setName] = useState("");
+  const [hosted, setHosted] = useState<boolean | null>(null);
+  const { busy, run } = useAction();
+  useEffect(() => {
+    void serverConfig().then((c) => setHosted(c.hostedWorkers));
+  }, []);
+  const steps: Array<[string, string]> = [
+    [
+      "Add a project",
+      hosted
+        ? "Start from the starter app, import a public Git repository, or begin empty."
+        : "A project points at one git repository and its base branch.",
+    ],
+    ...(hosted
+      ? []
+      : ([
           [
             "Connect a worker",
-            "A small process next to a clone of the repo runs the agent. Pairloom shows you the exact command.",
+            "A small process next to your clone runs the agent; Pairloom shows the exact command.",
           ],
-          ["Start a task", "Describe what to build; watch, steer, review and merge together."],
-        ].map(([t, d], i) => (
-          <li key={t}>
-            <span className="num">{i + 1}</span>
-            <div>
-              <b>{t}</b>
-              <p className="muted small">{d}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
-      <p className="muted small">Got an invite link from a teammate? Open it to join their team.</p>
+        ] as Array<[string, string]>)),
+    [
+      "Give the agent a task",
+      "Watch it work, steer it, then review, approve and merge its changes together.",
+    ],
+  ];
+  return (
+    <section className="card stack">
+      <div className="stack tight">
+        <h2>Create your team</h2>
+        <p className="muted small">
+          A team holds your projects and the people who work on them. You can invite teammates next.
+          Got an invite link instead? Open it to join that team.
+        </p>
+      </div>
+      <form
+        className="row wrap"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const w = await run(() => post("/api/workspaces", { name }));
+          if (w) navigate(`/w/${w.id}`);
+        }}
+      >
+        <input
+          className="grow"
+          style={{ width: "auto", minWidth: 220 }}
+          aria-label="New workspace name"
+          placeholder="New workspace name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+          maxLength={100}
+          autoFocus
+        />
+        <button type="submit" className="primary" disabled={busy}>
+          Create workspace
+        </button>
+      </form>
+      <div className="stack tight">
+        <b className="small">After that</b>
+        <ol className="steps">
+          {steps.map(([t, d], i) => (
+            <li key={t}>
+              <span className="num">{i + 2}</span>
+              <div>
+                <b>{t}</b>
+                <p className="muted small">{d}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
     </section>
   );
 }

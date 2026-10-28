@@ -48,6 +48,12 @@ export class RateLimiter {
     return h.n <= this.max;
   }
 
+  /** True once `key` has used up its window, without counting this check. */
+  blocked(key: string, now = Date.now()): boolean {
+    const h = this.hits.get(key);
+    return !!h && h.resetAt > now && h.n >= this.max;
+  }
+
   private sweep(now: number) {
     for (const [k, v] of this.hits) if (v.resetAt <= now) this.hits.delete(k);
   }

@@ -15,7 +15,6 @@ export function InvitePage({ token }: { token: string }) {
   if (!info) return <Loading label="Loading invitation…" />;
   return (
     <div className="card stack" style={{ maxWidth: 480, margin: "40px auto" }}>
-      <span className="eyebrow">Invitation</span>
       <h2>Join {info.workspaceName}</h2>
       <p className="muted">
         You'll join as <b>{info.role}</b> and see every project in this team.

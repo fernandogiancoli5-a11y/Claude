@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Relative paths in config are relative to the repository root, whatever the cwd. */
@@ -26,6 +26,13 @@ export interface ServerConfig {
    * and the web app moves to "/app/"; when unset, the web app stays at "/".
    */
   siteDistDir: string | null;
+  /**
+   * Run workers on this server for "Pairloom-hosted" projects, so teams can use the agent
+   * without setting up their own machine. The agent then executes on this host (sandboxed).
+   */
+  hostedWorkers: boolean;
+  /** Where hosted projects' repositories, worktrees and worker state live (persistent). */
+  hostedDir: string;
   /** Interval for server-side WebSocket liveness pings; a socket missing one is dropped. */
   heartbeatMs: number;
 }
@@ -51,6 +58,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     openSignup: env.OPEN_SIGNUP !== "false",
     webDistDir: env.WEB_DIST_DIR ? fromRoot(env.WEB_DIST_DIR) : null,
     siteDistDir: env.SITE_DIST_DIR ? fromRoot(env.SITE_DIST_DIR) : null,
+    hostedWorkers: env.PAIRLOOM_HOSTED_WORKERS === "true",
+    hostedDir: env.PAIRLOOM_HOSTED_DIR
+      ? fromRoot(env.PAIRLOOM_HOSTED_DIR)
+      : join(dirname(fromRoot(env.DATABASE_PATH ?? "./data/pairloom.sqlite")), "hosted"),
     heartbeatMs: Number(env.WS_HEARTBEAT_MS ?? 20_000),
   };
 }

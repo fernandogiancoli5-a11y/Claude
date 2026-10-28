@@ -363,4 +363,68 @@ describe("liveness and restart reconciliation", () => {
       "open",
     );
   });
+
+  it("reports a rejected test run instead of silently doing nothing", async () => {
+    const { owner, sessionId, workerToken } = await startSession();
+    const w = await connect(workerToken);
+    const start = await w.waitFor((f) => f.t === "command" && f.command.kind === "start");
+    w.send({ t: "command_ack", id: start.id, ok: true });
+    await tick();
+    expect((await owner.req("POST", `/api/sessions/${sessionId}/checks`)).status).toBe(200);
+    const cmd = await w.waitFor((f) => f.t === "command" && f.command.kind === "run_checks");
+    w.send({ t: "command_ack", id: cmd.id, ok: false, error: "Running code is disabled here" });
+    await tick();
+    const events = (await owner.req("GET", `/api/sessions/${sessionId}/events`)).body.events;
+    const notice = events.find((e: any) => e.type === "system.notice");
+    expect(notice.payload).toEqual({
+      level: "error",
+      message: "Tests didn't run: Running code is disabled here",
+    });
+    expect(events.some((e: any) => e.type === "checks.started")).toBe(false);
+  });
+
+  it("a merge the worker refuses leaves the change set open, explained, and mergeable again", async () => {
+    const { owner, sessionId, workerId, workerToken } = await startSession();
+    const w = await connect(workerToken);
+    const start = await w.waitFor((f) => f.t === "command" && f.command.kind === "start");
+    w.send({ t: "command_ack", id: start.id, ok: true });
+    app.core.ingestWorkerEvent(workerId, {
+      t: "event",
+      id: randomUUID(),
+      sessionId,
+      type: "changes.updated",
+      payload: {
+        baseCommit: "a".repeat(40),
+        headCommit: "b".repeat(40),
+        branchName: "pairloom/x",
+        files: [{ path: "a.js", insertions: 1, deletions: 0 }],
+        diff: "+x\n",
+        diffTruncated: false,
+      },
+    });
+    const cs = (await owner.req("GET", `/api/sessions/${sessionId}`)).body.changeSet;
+    await owner.req("POST", `/api/changesets/${cs.id}/reviews`, { decision: "approve" });
+    const merge = () =>
+      owner.req("POST", `/api/changesets/${cs.id}/merge`, { confirmSimulated: true });
+    expect((await merge()).status).toBe(200);
+    const cmd = await w.waitFor((f) => f.t === "command" && f.command.kind === "merge");
+    w.send({
+      t: "command_ack",
+      id: cmd.id,
+      ok: false,
+      error: "Agent is mid-turn; wait for it to finish",
+    });
+    await tick();
+    const after = (await owner.req("GET", `/api/sessions/${sessionId}`)).body.changeSet;
+    expect(after.status).toBe("open");
+    expect(after.mergeError).toContain("mid-turn");
+    const events = (await owner.req("GET", `/api/sessions/${sessionId}/events`)).body.events;
+    expect(
+      events.some(
+        (e: any) =>
+          e.payload?.message === "Merge didn't happen: Agent is mid-turn; wait for it to finish",
+      ),
+    ).toBe(true);
+    expect((await merge()).status).toBe(200); // can be retried
+  });
 });

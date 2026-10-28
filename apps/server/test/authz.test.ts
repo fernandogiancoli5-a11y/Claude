@@ -25,6 +25,58 @@ async function newSession(
 }
 
 describe("authentication", () => {
+  it("changes a password, signing out other sessions; the old password stops working", async () => {
+    const a = await signup(app, "pw");
+    const login = (password: string) =>
+      app.fastify.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email: a.email, password },
+      });
+    const other = await login("correct horse battery");
+    const otherCookie = String(other.headers["set-cookie"]).split(";")[0]!;
+    expect(
+      (
+        await a.req("POST", "/api/auth/password", {
+          currentPassword: "wrong one",
+          newPassword: "a brand new passphrase",
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await a.req("POST", "/api/auth/password", {
+          currentPassword: "correct horse battery",
+          newPassword: "short",
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await a.req("POST", "/api/auth/password", {
+          currentPassword: "correct horse battery",
+          newPassword: "a brand new passphrase",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await a.req("GET", "/api/me")).status).toBe(200); // this session kept
+    const stale = await app.fastify.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: { cookie: otherCookie },
+    });
+    expect(stale.statusCode).toBe(401); // the other session was signed out
+    expect((await login("correct horse battery")).statusCode).toBe(401);
+    expect((await login("a brand new passphrase")).statusCode).toBe(200);
+  });
+
+  it("operator reset sets a new password and signs the account out everywhere", async () => {
+    const a = await signup(app, "reset");
+    expect(await app.auth.resetPassword(a.email, "operator chose this")).toBe(true);
+    expect((await a.req("GET", "/api/me")).status).toBe(401);
+    expect(await app.auth.resetPassword("nobody@example.com", "whatever12345")).toBe(false);
+  });
+
   it("rejects unauthenticated access to protected routes", async () => {
     const res = await app.fastify.inject({ method: "GET", url: "/api/workspaces" });
     expect(res.statusCode).toBe(401);
@@ -36,6 +88,25 @@ describe("authentication", () => {
       app.fastify.inject({ method: "POST", url: "/api/auth/login", payload: { email, password } });
     expect((await login("wrong password!!")).statusCode).toBe(401);
     expect((await login("correct horse battery")).statusCode).toBe(200);
+  });
+
+  it("slows password guessing from one address without locking the account for others", async () => {
+    const { email } = await signup(app, "guess");
+    const login = (password: string, ip: string) =>
+      app.fastify.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { email, password },
+        remoteAddress: ip,
+      });
+    for (let i = 0; i < 10; i++)
+      expect((await login(`wrong guess ${i}`, "203.0.113.7")).statusCode).toBe(401);
+    // That address is locked out of this account, even with the right password...
+    const locked = await login("correct horse battery", "203.0.113.7");
+    expect(locked.statusCode).toBe(429);
+    expect(locked.json().error).toMatch(/Too many failed attempts/);
+    // ...but the owner signing in from elsewhere is not.
+    expect((await login("correct horse battery", "198.51.100.4")).statusCode).toBe(200);
   });
 
   it("rejects expired auth sessions", async () => {

@@ -26,6 +26,22 @@ export function StatusBadge({ status, short }: { status: SessionStatus; short?: 
   return <span className={`badge dot tone-${s.tone}`}>{(short && SHORT[status]) || s.label}</span>;
 }
 
+/** Flags a task whose latest agent turn ended without finishing (time, step or token limit, error). */
+export function OutcomeBadge({ outcome }: { outcome: string | null | undefined }) {
+  if (!outcome || outcome === "end_turn" || outcome === "success") return null;
+  const label =
+    outcome === "interrupted"
+      ? "interrupted"
+      : outcome.startsWith("error_provider")
+        ? "model error"
+        : "unfinished";
+  return (
+    <span className="badge tone-warn" title={`The agent's last turn ended with ${outcome}`}>
+      {label}
+    </span>
+  );
+}
+
 export function ModeBadge({ mode }: { mode: ExecutionMode }) {
   return mode === "real" ? (
     <span className="badge">REAL agent</span>
@@ -48,4 +64,13 @@ export function WorkerBadge({ worker }: { worker: WorkerDTO }) {
       {worker.lastSeenAt ? ` · last seen ${new Date(worker.lastSeenAt).toLocaleTimeString()}` : ""}
     </span>
   );
+}
+
+/** Friendly model name, e.g. "gpt-oss-120b via Groq", never a raw endpoint address. */
+export function modelLabel(provider?: string, model?: string): string | null {
+  if (!model) return null;
+  const short = model.split("/").pop();
+  if (!provider) return short ?? model;
+  if (provider.startsWith("custom endpoint")) return `${short} on a custom endpoint`;
+  return `${short} via ${provider[0]!.toUpperCase()}${provider.slice(1)}`;
 }
